@@ -1,0 +1,111 @@
+{{template "head" .Page}}
+
+	<h2>Hub</h2>
+	<div class="card hub">
+		<div class="row"><span class="label">Name</span><span>{{.Hub.Name}}</span></div>
+		<div class="row"><span class="label">Public key</span><span class="mono key">{{.Hub.PublicKey}}</span></div>
+		<div class="row"><span class="label">Last advert</span>
+			<span>{{if never .Hub.LastAdvert}}<span class="muted">not sent since start</span>{{else}}{{ago .Hub.LastAdvert}}{{end}}</span>
+		</div>
+		<div class="row"><span class="label">Heard back</span>
+			<span>{{with .Hub.LastEcho}}{{ago .At}} via {{or (index $.GatewayNames .Gateway) (short .Gateway)}}, {{.Hops}} hops, SNR {{.SNR}}{{else}}<span class="muted">not yet</span>{{end}}</span>
+		</div>
+		{{if .Hub.Results}}
+		<div class="row"><span class="label">TX results</span>
+			<ul class="results">
+				{{range .Hub.Results}}<li>{{.What}} via {{or (index $.GatewayNames .Gateway) (short .Gateway)}}: <strong>{{.Status}}</strong> <span class="muted">{{ago .At}}</span></li>{{end}}
+			</ul>
+		</div>
+		{{end}}
+		<form method="post" action="/advert"><button type="submit">Send advert</button></form>
+	</div>
+
+
+	<h2>Devices</h2>
+	<div class="card">
+		{{if .Devices}}
+		<table>
+			<tr>
+				<th>Status</th><th>Key</th><th>Program</th><th>Firmware</th><th>Config</th>
+				<th class="num">Battery</th><th>Last check-in</th><th></th>
+			</tr>
+			{{range .Devices}}
+			<tr>
+				<td><span class="state {{.Status}}"><span class="dot"></span>{{.Status}}</span></td>
+				<td class="mono"><a href="/devices/{{.PubKey}}" title="{{.PubKey}}">{{short .PubKey}}</a></td>
+				<td>{{.Program}}</td>
+				<td class="muted">{{.Firmware}}</td>
+				<td>{{configState .}}</td>
+				<td class="num">{{if .BatteryMV}}{{.BatteryMV}} mV{{else}}<span class="muted">–</span>{{end}}</td>
+				<td class="muted">{{if never .LastHelloAt}}never{{else}}{{ago .LastHelloAt}}{{end}}</td>
+				<td>
+					{{if eq .Status "pending"}}
+					<form class="inline" method="post" action="/devices/{{.PubKey}}/status"><input type="hidden" name="status" value="paired"><button>Approve</button></form>
+					<form class="inline" method="post" action="/devices/{{.PubKey}}/status"><input type="hidden" name="status" value="rejected"><button class="secondary">Reject</button></form>
+					{{end}}
+				</td>
+			</tr>
+			{{end}}
+		</table>
+		{{else}}
+		<div class="empty">No devices yet. They appear when a node built with the hub's public key asks to pair.</div>
+		{{end}}
+	</div>
+
+	<h2>Gateways</h2>
+	<div class="card">
+		{{if .Gateways}}
+		<table>
+			<tr>
+				<th>Status</th><th>Name</th><th>Key</th><th>Region</th><th>Radio</th><th>Firmware</th>
+				<th class="num">Uptime</th><th class="num">TX air</th><th class="num">Dropped</th><th>Last status</th>
+			</tr>
+			{{range .Gateways}}
+			<tr>
+				<td><span class="state {{.State}}"><span class="dot"></span>{{.State}}</span></td>
+				<td>{{.Name}}</td>
+				<td class="mono" title="{{.PubKey}}">{{short .PubKey}}</td>
+				<td>{{.IATA}}</td>
+				<td class="mono">{{.Radio}}</td>
+				<td class="muted">{{.Firmware}}</td>
+				<td class="num">{{uptime .Stats.UptimeSecs}}</td>
+				<td class="num">{{.Stats.TxAirSecs}}s</td>
+				<td class="num">{{.Stats.UplinkDropped}}</td>
+				<td class="muted">{{ago .LastStatusAt}}</td>
+			</tr>
+			{{end}}
+		</table>
+		{{else}}
+		<div class="empty">No gateways yet. They appear when they publish their status.</div>
+		{{end}}
+	</div>
+
+	<h2>Mesh nodes</h2>
+	<div class="card">
+		{{if .Nodes}}
+		<table>
+			<tr>
+				<th>Name</th><th>Type</th><th>Key</th><th>Location</th><th>Best gateway</th>
+				<th class="num">Hops</th><th class="num">SNR</th><th class="num">RSSI</th><th>Last heard</th>
+			</tr>
+			{{range .Nodes}}
+			<tr>
+				<td>{{if .Name}}{{.Name}}{{else}}<span class="muted">unnamed</span>{{end}}</td>
+				<td>{{nodeType .Type}}</td>
+				<td class="mono" title="{{.PubKey}}">{{short .PubKey}}</td>
+				<td>{{if .HasLoc}}<a class="mono" href="https://www.openstreetmap.org/?mlat={{.Lat}}&mlon={{.Lon}}#map=15/{{.Lat}}/{{.Lon}}">{{printf "%.5f, %.5f" .Lat .Lon}}</a>{{else}}<span class="muted">–</span>{{end}}</td>
+				{{with index .Links 0}}
+				<td>{{or (index $.GatewayNames .Gateway) (short .Gateway)}}</td>
+				<td class="num">{{.Hops}}</td>
+				<td class="num">{{.SNR}}</td>
+				<td class="num">{{.RSSI}}</td>
+				{{end}}
+				<td class="muted">{{ago .LastHeardAt}}</td>
+			</tr>
+			{{end}}
+		</table>
+		{{else}}
+		<div class="empty">No nodes yet. They appear when a gateway hears their advert.</div>
+		{{end}}
+	</div>
+{{template "foot"}}

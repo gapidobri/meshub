@@ -1,0 +1,56 @@
+{{template "head" .Page}}
+	{{with .Device}}
+	<h2>Device</h2>
+	<div class="card hub">
+		<div class="row"><span class="label">Status</span><span class="state {{.Status}}"><span class="dot"></span>{{.Status}}</span></div>
+		<div class="row"><span class="label">Public key</span><span class="mono key">{{.PubKey}}</span></div>
+		<div class="row"><span class="label">Program</span><span>{{.Program}}</span></div>
+		<div class="row"><span class="label">Firmware</span><span>{{or .Firmware "–"}}</span></div>
+		{{if .Claim}}<div class="row"><span class="label">Claim code</span><span class="mono">{{.Claim}}</span></div>{{end}}
+		<div class="row"><span class="label">Config</span><span>{{configState .}}</span></div>
+		<div class="row"><span class="label">Last check-in</span>
+			<span>{{if never .LastHelloAt}}<span class="muted">never</span>{{else}}{{ago .LastHelloAt}} · woke by {{wakeReason .WakeReason}} · up {{uptime .UptimeS}}{{if .BatteryMV}} · {{.BatteryMV}} mV{{end}}{{end}}</span>
+		</div>
+		<div class="row"><span class="label">Joined</span><span>{{ago .JoinedAt}}</span></div>
+		<div class="actions">
+			{{if ne .Status "paired"}}
+			<form class="inline" method="post" action="/devices/{{.PubKey}}/status"><input type="hidden" name="status" value="paired"><button>Approve</button></form>
+			{{end}}
+			{{if ne .Status "rejected"}}
+			<form class="inline" method="post" action="/devices/{{.PubKey}}/status"><input type="hidden" name="status" value="rejected"><button class="secondary">{{if eq .Status "paired"}}Revoke{{else}}Reject{{end}}</button></form>
+			{{end}}
+			<form class="inline" method="post" action="/devices/{{.PubKey}}/delete" onsubmit="return confirm('Forget this device, its config and events? It will have to pair again.')"><button class="secondary">Forget</button></form>
+		</div>
+	</div>
+	{{end}}
+
+	<h2>Config</h2>
+	<div class="card">
+		<form class="stack" method="post" action="/devices/{{.Device.PubKey}}/config">
+			<textarea name="config" spellcheck="false" aria-label="Config as JSON">{{.ConfigJSON}}</textarea>
+			<div class="actions">
+				<button>Save</button>
+				<span class="muted">A JSON object. The device fetches it at its next check-in.</span>
+			</div>
+		</form>
+	</div>
+
+	<h2>Events</h2>
+	<div class="card">
+		{{if .Events}}
+		<table>
+			<tr><th class="num">Seq</th><th>Kind</th><th>Data</th><th>Received</th></tr>
+			{{range .Events}}
+			<tr>
+				<td class="num">{{.Seq}}</td>
+				<td>{{.Kind}}</td>
+				<td class="mono wrap">{{.Data}}</td>
+				<td class="muted">{{ago .ReceivedAt}}</td>
+			</tr>
+			{{end}}
+		</table>
+		{{else}}
+		<div class="empty">No events yet.</div>
+		{{end}}
+	</div>
+{{template "foot"}}

@@ -14,7 +14,7 @@ ifneq ($(PORT),)
 TINYGOFLAGS += -port $(PORT)
 endif
 
-.PHONY: all gateway flash monitor config test broker broker-down broker-logs mqtt-sub clean
+.PHONY: all gateway flash monitor config test server broker broker-down broker-logs mqtt-sub clean
 
 all: test gateway
 
@@ -39,6 +39,11 @@ $(CONFIG):
 test:
 	go vet ./...
 	go test -race ./...
+
+# Runs the backend against the local broker; the UI is on http://localhost:8080.
+server:
+	@mkdir -p $(BUILD)
+	go run ./server/cmd/meshub -db $(BUILD)/meshub.db
 
 broker:
 	docker compose up -d
