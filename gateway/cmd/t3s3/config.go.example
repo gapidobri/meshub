@@ -1,0 +1,27 @@
+//go:build tinygo
+
+package main
+
+// Gateway settings. Copy this file to config.go (gitignored) and fill it in.
+var config = settings{
+	WiFiSSID:     "",
+	WiFiPassword: "",
+
+	Broker:       "192.168.1.10:1883",
+	MQTTUser:     "",
+	MQTTPassword: "",
+
+	Name: "meshub gateway",
+	IATA: "XXX",
+
+	IdentitySeed: "",
+	Repeat:       false,
+
+	// MeshCore EU/UK narrow preset. 869.4–869.65 MHz allows a 10% duty cycle.
+	FrequencyHz:  869_618_000,
+	BandwidthKHz: 62.5,
+	SF:           8,
+	CR:           5,
+	TxPowerDBm:   22,
+	DutyCycle:    0.1,
+}

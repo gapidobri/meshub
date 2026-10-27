@@ -1,0 +1,5 @@
+# Per-gateway firmware settings, created from config.go.example
+gateway/cmd/t3s3/config.go
+
+# Firmware build output
+build/

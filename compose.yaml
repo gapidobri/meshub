@@ -1,0 +1,19 @@
+# Local MQTT broker for testing gateways.
+#
+#   docker compose up -d
+#   docker compose exec mosquitto mosquitto_sub -v -t 'meshcore/#' -t 'meshub/#'
+#
+# Gateways connect to <this machine's LAN IP>:1883 without credentials.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22
+    restart: unless-stopped
+    ports:
+      - "1883:1883" # MQTT
+      - "9001:9001" # MQTT over WebSocket, for browser clients
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+volumes:
+  mosquitto-data:
