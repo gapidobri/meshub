@@ -6,8 +6,8 @@ github.com/dustin/go-humanize v1.1.0 h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2
 github.com/dustin/go-humanize v1.1.0/go.mod h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=
 github.com/eclipse/paho.mqtt.golang v1.5.1 h1:/VSOv3oDLlpqR2Epjn1Q7b2bSTplJIeV2ISgCl2W7nE=
 github.com/eclipse/paho.mqtt.golang v1.5.1/go.mod h1:1/yJCneuyOoCOzKSsOTUc0AJfpsItBGWvYpBLimhArU=
-github.com/gapidobri/meshcore-go v0.0.0-20261027214317-2c1e4ebf9da0 h1:wXCBTFLrpwHr90vhoVseO9pWEehiHrIB4wuSmg/SU5U=
-github.com/gapidobri/meshcore-go v0.0.0-20261027214317-2c1e4ebf9da0/go.mod h1:x/wXhHdb5CW3qItrn4cKn4t/V9ycxm3HKWpPFbsDQ9Y=
+github.com/gapidobri/meshcore-go v0.0.0-20261028001933-56c9ef5cf9cc h1:hHAcqPl1N4rKN9QG/qdKv0QgWMEa0KhQtSK8WaMsRoU=
+github.com/gapidobri/meshcore-go v0.0.0-20261028001933-56c9ef5cf9cc/go.mod h1:x/wXhHdb5CW3qItrn4cKn4t/V9ycxm3HKWpPFbsDQ9Y=
 github.com/google/pprof v0.0.0-20261016150608-1facf8f91b50 h1:PlNWJRxu5APSV0pWqfIsZ0qt9OOGHSWfZQ4zvx+WgWs=
 github.com/google/pprof v0.0.0-20261016150608-1facf8f91b50/go.mod h1:yUo1AMMpsPIDFGuwDK8nLcf8+vvAd5l2O6JDZ6hpwrM=
 github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 h1:El6M4kTTCOh6aBiKaUGG7oYTSPP8MxqL4YI3kZKwcP4=

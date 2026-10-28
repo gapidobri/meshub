@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
-	github.com/gapidobri/meshcore-go v0.0.0-20261027214317-2c1e4ebf9da0
+	github.com/gapidobri/meshcore-go v0.0.0-20261028001933-56c9ef5cf9cc
 	github.com/mochi-mqtt/server/v2 v2.7.9
 	github.com/soypat/natiu-mqtt v0.7.0
 	modernc.org/sqlite v1.61.0
