@@ -1,0 +1,27 @@
+//go:build tinygo
+
+package main
+
+import (
+	"machine"
+	"time"
+)
+
+// Device settings. Copy this file to config.go (gitignored) and fill it in.
+var config = settings{
+	// The hub's public key, from the Hub panel of the backend's web UI.
+	HubPublicKey: "",
+	Program:      "example",
+	Claim:        "",
+
+	Interval: time.Hour,
+	// WB_IO1 on the WisBlock base board; check your base board's pinout.
+	WakePin: machine.P0_17,
+
+	// MeshCore EU/UK narrow preset; must match the gateways.
+	FrequencyHz:  869_618_000,
+	BandwidthKHz: 62.5,
+	SF:           8,
+	CR:           5,
+	TxPowerDBm:   22,
+}

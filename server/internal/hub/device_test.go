@@ -13,6 +13,7 @@ import (
 
 	meshcore "github.com/gapidobri/meshcore-go"
 	"github.com/gapidobri/meshub/node"
+	"github.com/gapidobri/meshub/node/flashstore"
 	"github.com/gapidobri/meshub/proto/gwproto"
 	"github.com/gapidobri/meshub/proto/hubproto"
 	"github.com/gapidobri/meshub/server/internal/ingest"
@@ -285,10 +286,32 @@ func TestDeviceRouting(t *testing.T) {
 }
 
 func TestDeviceStatePersists(t *testing.T) {
-	h, _, a, n, storage := setupDevice(t)
+	h, _, a, _, _ := setupDevice(t)
 	h.AutoPair = true
 	ctx := context.Background()
 	a.setLinks(link{gateway: gw1, snr: 5})
+
+	// The device keeps its state in flash, as on hardware (nRF52: 4-byte
+	// writes, 4 KiB erase blocks).
+	flash := flashstore.NewMemDevice(64*1024, 4, 4096)
+	boot := func() *node.Node {
+		t.Helper()
+		storage, err := flashstore.Open(flash, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hubID, _ := meshcore.IdentityFromHex(h.PublicKey())
+		ms := meshcore.NewSystemMillis()
+		n, err := node.New(node.Config{
+			Radio: &devRadio{air: a}, Millis: ms, RNG: randRNG{}, RTC: meshcore.NewVolatileRTCClock(ms),
+			Storage: storage, Hub: hubID, Program: "hydrant", ReplyTimeout: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	n := boot()
 	if _, err := h.SetConfig(ctx, n.PublicKey(), []byte(`{"interval_s":600}`)); err == nil {
 		t.Fatal("config accepted for an unknown device")
 	}
@@ -302,17 +325,17 @@ func TestDeviceStatePersists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A reboot (new Node on the same storage) keeps the identity, pairing,
-	// config and route, and its requests are still accepted.
-	hubID, _ := meshcore.IdentityFromHex(h.PublicKey())
-	ms := meshcore.NewSystemMillis()
-	n2, err := node.New(node.Config{
-		Radio: &devRadio{air: a}, Millis: ms, RNG: randRNG{}, RTC: meshcore.NewVolatileRTCClock(ms),
-		Storage: storage, Hub: hubID, Program: "hydrant", ReplyTimeout: time.Second,
-	})
-	if err != nil {
-		t.Fatal(err)
+	// Many check-ins use up several request-number reservations, each
+	// saved to flash.
+	for i := 0; i < 40; i++ {
+		if err := n.Sync(ctx); err != nil {
+			t.Fatalf("check-in %d: %v", i, err)
+		}
 	}
+
+	// A reboot keeps the identity, pairing, config and route, and its
+	// requests are still accepted.
+	n2 := boot()
 	if n2.PublicKey() != n.PublicKey() || !n2.Paired() || n2.Config().Get("interval_s").Int(0) != 600 {
 		t.Fatalf("after reboot: key match %v, paired %v, config %v", n2.PublicKey() == n.PublicKey(), n2.Paired(), n2.Config().Any())
 	}

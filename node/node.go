@@ -13,7 +13,9 @@
 //	sleep(n.SleepHint())
 //
 // The node only runs the mesh while it waits for the hub, and never
-// repeats other nodes' packets.
+// repeats other nodes' packets. It leaves the radio receiving when Sync or
+// Flush returns; a battery node puts the radio to sleep until the next one
+// (and Begins it again first, if sleeping loses its configuration).
 package node
 
 import (
@@ -417,6 +419,7 @@ func (n *Node) send(ctx context.Context, m hubproto.Message, anon, direct bool) 
 			return nil, err
 		}
 		n.mesh.Loop()
+		n.cfg.RTC.Tick()
 		if reply := n.h.take(); reply != nil {
 			return reply, nil
 		}

@@ -5,3 +5,10 @@ gateway/cmd/t3s3/config.go
 
 # Firmware build output
 build/
+
+# Local development against a meshcore-go checkout
+go.work
+go.work.sum
+
+# Per-device example node settings, created from config.go.example
+examples/rak4631/config.go
