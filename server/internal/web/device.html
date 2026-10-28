@@ -35,16 +35,45 @@
 		</form>
 	</div>
 
+	<h2>Commands</h2>
+	<div class="card">
+		<form class="stack" method="post" action="/devices/{{.Device.PubKey}}/commands">
+			<div class="actions">
+				<input name="name" placeholder="command" aria-label="Command name" list="builtin-commands" required>
+				<input class="grow mono" name="args" placeholder='arguments as JSON, e.g. {"clear": true}' aria-label="Arguments as JSON">
+				<button>Queue</button>
+			</div>
+			<datalist id="builtin-commands"><option value="logs"><option value="reset"></datalist>
+			<span class="muted">The device runs it at its next check-in. Built in: <b>logs</b> returns its log buffer (<span class="mono">{"clear": true}</span> empties it), <b>reset</b> drops its queued events, config and route.</span>
+		</form>
+		{{if .Commands}}
+		<table>
+			<tr><th class="num">ID</th><th>Command</th><th>Status</th><th>Result</th><th>Queued</th></tr>
+			{{range .Commands}}
+			<tr>
+				<td class="num">{{.ID}}</td>
+				<td><span>{{.Name}}</span>{{if ne .Args "null"}} <span class="mono muted">{{.Args}}</span>{{end}}</td>
+				<td><span class="state {{.Status}}"><span class="dot"></span>{{.Status}}</span></td>
+				<td class="wrap">{{with text .Result}}<pre class="result">{{.}}</pre>{{end}}</td>
+				<td class="muted">{{ago .CreatedAt}}{{if pending .}}
+					<form class="inline" method="post" action="/devices/{{$.Device.PubKey}}/commands/{{.ID}}/cancel"><button class="secondary">Cancel</button></form>{{end}}</td>
+			</tr>
+			{{end}}
+		</table>
+		{{end}}
+	</div>
+
 	<h2>Events</h2>
 	<div class="card">
 		{{if .Events}}
 		<table>
-			<tr><th class="num">Seq</th><th>Kind</th><th>Data</th><th>Received</th></tr>
+			<tr><th class="num">Seq</th><th>Kind</th><th>Data</th><th>Happened</th><th>Received</th></tr>
 			{{range .Events}}
 			<tr>
 				<td class="num">{{.Seq}}</td>
 				<td>{{.Kind}}</td>
 				<td class="mono wrap">{{.Data}}</td>
+				<td>{{if never .DeviceTime}}<span class="muted">unknown</span>{{else}}{{ago .DeviceTime}}{{end}}</td>
 				<td class="muted">{{ago .ReceivedAt}}</td>
 			</tr>
 			{{end}}

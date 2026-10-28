@@ -150,7 +150,7 @@ const (
 	gw2 = "2222000000000000000000000000000000000000000000000000000000000000"
 )
 
-func setupDevice(t *testing.T) (*Hub, *store.Store, *air, *node.Node, *node.MemStorage) {
+func setupDevice(t *testing.T, opts ...func(*node.Config)) (*Hub, *store.Store, *air, *node.Node, *node.MemStorage) {
 	t.Helper()
 	old := collectWindow
 	collectWindow = 30 * time.Millisecond
@@ -166,18 +166,52 @@ func setupDevice(t *testing.T) (*Hub, *store.Store, *air, *node.Node, *node.MemS
 	hubID, _ := meshcore.IdentityFromHex(h.PublicKey())
 	ms := meshcore.NewSystemMillis()
 	storage := &node.MemStorage{}
-	n, err := node.New(node.Config{
+	cfg := node.Config{
 		Radio: &devRadio{air: a}, Millis: ms, RNG: randRNG{}, RTC: meshcore.NewVolatileRTCClock(ms),
 		Storage: storage, Hub: hubID, Program: "hydrant", Firmware: "0.1", ReplyTimeout: time.Second,
-	})
+		StartDelay: -1, RetryBackoff: -1, Retries: -1,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	n, err := node.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return h, st, a, n, storage
 }
 
+// recorder is a Notifier that remembers what it heard.
+type recorder struct {
+	mu    sync.Mutex
+	heard []string
+}
+
+func (r *recorder) note(s string) {
+	r.mu.Lock()
+	r.heard = append(r.heard, s)
+	r.mu.Unlock()
+}
+
+func (r *recorder) DeviceChanged(string)          { r.note("device") }
+func (r *recorder) DeviceDeleted(store.Device)    { r.note("deleted") }
+func (r *recorder) EventsAdded()                  { r.note("events") }
+func (r *recorder) CommandChanged(string, uint32) { r.note("command") }
+func (r *recorder) count(s string) (n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, h := range r.heard {
+		if h == s {
+			n++
+		}
+	}
+	return n
+}
+
 func TestDevicePairingAndConfig(t *testing.T) {
 	h, st, a, n, _ := setupDevice(t)
+	rec := &recorder{}
+	h.Notify = rec
 	ctx := context.Background()
 	a.setLinks(link{gateway: gw1, repeaters: []byte{0xAA}, snr: 5})
 
@@ -189,11 +223,14 @@ func TestDevicePairingAndConfig(t *testing.T) {
 	if !ok || dev.Status != store.DevicePending || dev.Program != "hydrant" {
 		t.Fatalf("device = %+v, %v", dev, ok)
 	}
-	if err := st.SetDeviceStatus(ctx, n.PublicKey(), store.DevicePaired); err != nil {
+	if err := h.SetDeviceStatus(ctx, n.PublicKey(), store.DevicePaired); err != nil {
 		t.Fatal(err)
 	}
 	if err := n.Sync(ctx); err != nil {
 		t.Fatalf("Sync after approval: %v", err)
+	}
+	if rec.count("device") < 4 { // join, approval, join, hello
+		t.Errorf("notifications = %v", rec.heard)
 	}
 	if !n.Paired() || n.ConfigVersion() != 0 {
 		t.Errorf("paired %v, config version %d", n.Paired(), n.ConfigVersion())
@@ -228,6 +265,9 @@ func TestDevicePairingAndConfig(t *testing.T) {
 	events, _ := st.Events(ctx, n.PublicKey(), 10)
 	if len(events) != 1 || events[0].Kind != "flow" || events[0].Data != `{"duration_s":93}` {
 		t.Errorf("events = %+v", events)
+	}
+	if rec.count("events") != 1 {
+		t.Errorf("notifications = %v", rec.heard)
 	}
 	dev, _, _ = st.Device(ctx, n.PublicKey())
 	if dev.ConfigVersion != version || dev.WantVersion != version {
@@ -305,6 +345,7 @@ func TestDeviceStatePersists(t *testing.T) {
 		n, err := node.New(node.Config{
 			Radio: &devRadio{air: a}, Millis: ms, RNG: randRNG{}, RTC: meshcore.NewVolatileRTCClock(ms),
 			Storage: storage, Hub: hubID, Program: "hydrant", ReplyTimeout: time.Second,
+			StartDelay: -1, RetryBackoff: -1, Retries: -1,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -341,5 +382,186 @@ func TestDeviceStatePersists(t *testing.T) {
 	}
 	if err := n2.Sync(ctx); err != nil {
 		t.Fatalf("Sync after reboot: %v", err)
+	}
+}
+
+func TestDeviceCommands(t *testing.T) {
+	h, st, a, n, _ := setupDevice(t, func(c *node.Config) {
+		c.Command = func(name string, args hubproto.Value) (hubproto.Value, error) {
+			switch name {
+			case "read":
+				v := hubproto.Map()
+				v.Set("level", hubproto.Int(7*args.Get("n").Int(1)))
+				return v, nil
+			case "fail":
+				return hubproto.Null(), errors.New("sensor offline")
+			}
+			return hubproto.Null(), node.ErrUnknownCommand
+		}
+		c.LogSize = node.MaxLogSize
+	})
+	h.AutoPair = true
+	ctx := context.Background()
+	a.setLinks(link{gateway: gw1, snr: 5})
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A log larger than one datagram comes back in fragments.
+	for i := 0; i < 40; i++ {
+		n.Log(fmt.Sprintf("line %02d %s", i, strings.Repeat("x", 30)))
+	}
+	ids := map[string]uint32{}
+	for _, c := range []struct{ name, args string }{{"read", `{"n":3}`}, {"fail", ""}, {"bogus", ""}, {"logs", `{"clear":true}`}} {
+		id, err := h.QueueCommand(ctx, n.PublicKey(), c.name, []byte(c.args))
+		if err != nil {
+			t.Fatalf("queue %s: %v", c.name, err)
+		}
+		ids[c.name] = id
+	}
+	cancelled, _ := h.QueueCommand(ctx, n.PublicKey(), "read", nil)
+	if err := h.CancelCommand(ctx, n.PublicKey(), cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("Sync with commands: %v", err)
+	}
+
+	cmds, _ := st.Commands(ctx, n.PublicKey(), 10)
+	got := map[uint32]store.Command{}
+	for _, c := range cmds {
+		got[c.ID] = c
+	}
+	for name, want := range map[string]struct{ status, result string }{
+		"read":  {store.CommandOK, `{"level":21}`},
+		"fail":  {store.CommandFailed, `"sensor offline"`},
+		"bogus": {store.CommandUnknown, `null`},
+	} {
+		if c := got[ids[name]]; c.Status != want.status || c.Result != want.result {
+			t.Errorf("%s: %s %s, want %s %s", name, c.Status, c.Result, want.status, want.result)
+		}
+	}
+	logs := got[ids["logs"]]
+	if logs.Status != store.CommandOK || len(logs.Result) < hubproto.MaxPlaintext || !strings.Contains(logs.Result, "line 39") {
+		t.Errorf("logs: %s, %d bytes", logs.Status, len(logs.Result))
+	}
+	if n.Logs() != "" {
+		t.Errorf("log not cleared: %q", n.Logs())
+	}
+	if got[cancelled].Status != store.CommandCancelled {
+		t.Errorf("cancelled command: %s", got[cancelled].Status)
+	}
+	if left, _ := st.PendingCommands(ctx, n.PublicKey()); left != 0 {
+		t.Errorf("%d commands still pending", left)
+	}
+
+	if _, err := h.QueueCommand(ctx, n.PublicKey(), "", nil); err == nil {
+		t.Error("empty command name accepted")
+	}
+	if _, err := h.QueueCommand(ctx, n.PublicKey(), "x", []byte(fmt.Sprintf(`{"a":%q}`, strings.Repeat("x", 200)))); err == nil {
+		t.Error("command too large for a datagram accepted")
+	}
+}
+
+func TestDeviceConfigValidation(t *testing.T) {
+	h, st, a, n, _ := setupDevice(t, func(c *node.Config) {
+		c.Validate = func(cfg hubproto.Value) error {
+			if cfg.Get("interval_s").Int(1) <= 0 {
+				return errors.New("interval_s must be positive")
+			}
+			return nil
+		}
+	})
+	h.AutoPair = true
+	ctx := context.Background()
+	a.setLinks(link{gateway: gw1, snr: 5})
+
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	good, _ := h.SetConfig(ctx, n.PublicKey(), []byte(`{"interval_s":600}`))
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	bad, _ := h.SetConfig(ctx, n.PublicKey(), []byte(`{"interval_s":0}`))
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("Sync with a bad config: %v", err)
+	}
+	if n.ConfigVersion() != good || n.Config().Get("interval_s").Int(0) != 600 {
+		t.Errorf("node has config v%d %v, want the good one", n.ConfigVersion(), n.Config().Any())
+	}
+	dev, _, _ := st.Device(ctx, n.PublicKey())
+	if dev.RejectedVersion != bad || dev.ConfigError != "interval_s must be positive" || dev.ConfigVersion != good {
+		t.Errorf("device = %+v", dev)
+	}
+
+	// The rejected config is not fetched again.
+	before := a.transmissions()
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.transmissions() - before; got != 1 {
+		t.Errorf("hub sent %d packets for a check-in with a rejected config, want 1", got)
+	}
+
+	fixed, _ := h.SetConfig(ctx, n.PublicKey(), []byte(`{"interval_s":60}`))
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if dev, _, _ := st.Device(ctx, n.PublicKey()); n.ConfigVersion() != fixed || dev.ConfigVersion != fixed {
+		t.Errorf("node v%d, hub records v%d, want %d", n.ConfigVersion(), dev.ConfigVersion, fixed)
+	}
+}
+
+func TestDeviceEvents(t *testing.T) {
+	h, st, a, n, _ := setupDevice(t)
+	h.AutoPair = true
+	ctx := context.Background()
+	a.setLinks(link{gateway: gw1, snr: 5})
+
+	// Events reported before the first check-in are stamped once the hub
+	// sets the clock.
+	data := hubproto.Map()
+	data.Set("n", hubproto.Int(0))
+	n.Report("early", data)
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Many small events go in few messages; a large one in fragments.
+	for i := 1; i <= 10; i++ {
+		d := hubproto.Map()
+		d.Set("n", hubproto.Int(int64(i)))
+		n.Report("small", d)
+	}
+	big := hubproto.Map()
+	big.Set("samples", hubproto.String(strings.Repeat("0123456789", 50)))
+	if err := n.Report("big", big); err != nil {
+		t.Fatal(err)
+	}
+	huge := hubproto.Map()
+	huge.Set("samples", hubproto.String(strings.Repeat("x", hubproto.MaxMessage)))
+	if err := n.Report("huge", huge); !errors.Is(err, node.ErrTooLarge) {
+		t.Errorf("Report of a huge event = %v, want ErrTooLarge", err)
+	}
+	before := a.transmissions()
+	if err := n.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// 10 small events fit two datagrams; 500 bytes need four fragments.
+	if got := a.transmissions() - before; got > 6 {
+		t.Errorf("hub sent %d replies for 11 events, want at most 6", got)
+	}
+	events, _ := st.Events(ctx, n.PublicKey(), 20)
+	if len(events) != 12 {
+		t.Fatalf("%d events stored, want 12", len(events))
+	}
+	for _, e := range events {
+		if e.DeviceTime.IsZero() || time.Since(e.DeviceTime) > time.Minute {
+			t.Errorf("event %d %s: device time %v", e.Seq, e.Kind, e.DeviceTime)
+		}
+		if e.Kind == "big" && !strings.Contains(e.Data, "0123456789") {
+			t.Errorf("big event = %s", e.Data)
+		}
 	}
 }

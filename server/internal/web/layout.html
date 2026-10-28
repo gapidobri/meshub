@@ -55,6 +55,13 @@
 	.stack { padding: 16px; display: grid; gap: 12px; }
 	.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 	td.wrap { white-space: normal; word-break: break-word; }
+	input { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px;
+		background: var(--bg); color: var(--fg); min-width: 0; }
+	input.grow { flex: 1 1 240px; }
+	pre.result { margin: 0; max-height: 320px; overflow: auto; white-space: pre-wrap;
+		font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+	.ok .dot { background: var(--ok); }
+	.failed .dot, .unknown .dot { background: var(--warn); }
 </style>
 </head>
 <body>

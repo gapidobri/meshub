@@ -253,6 +253,9 @@ func TestGatewayEndToEnd(t *testing.T) {
 	if up.Raw != strings.ToUpper(hex.EncodeToString(tx)) || up.Route != "D" {
 		t.Errorf("tx uplink = %+v", up)
 	}
+	if a := gw.Activity(); a.RxPackets != 1 || a.TxPackets != 1 || a.LastRx.IsZero() || a.LastRSSI != -97 {
+		t.Errorf("activity = %+v", a)
+	}
 
 	// Malformed requests are rejected.
 	bad := (&gwproto.TxRequest{ID: 43, Raw: []byte{0x3C, 0xFF}}).AppendBinary(nil) // path length too long

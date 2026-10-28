@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS devices (
 	uptime_s       INTEGER NOT NULL DEFAULT 0,
 	last_hello_at  INTEGER NOT NULL DEFAULT 0,
 	joined_at      INTEGER NOT NULL
+	-- rejected_version and config_error are added by migration 2
 );
 
 -- The config the hub wants each device to have.
@@ -110,5 +111,21 @@ CREATE TABLE IF NOT EXISTS events (
 	data        TEXT NOT NULL, -- JSON
 	received_at INTEGER NOT NULL,
 	PRIMARY KEY (pubkey, event_seq)
+	-- device_time is added by migration 2, and migration 3 rebuilds the
+	-- table with an id
 );
 CREATE INDEX IF NOT EXISTS events_received_at ON events(received_at);
+
+-- Commands queued for devices, which fetch them at check-in.
+CREATE TABLE IF NOT EXISTS device_commands (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT, -- sent to the device, never reused
+	pubkey     TEXT NOT NULL REFERENCES devices(pubkey) ON DELETE CASCADE,
+	name       TEXT NOT NULL,
+	args       TEXT NOT NULL, -- JSON
+	args_cbor  BLOB NOT NULL,
+	status     TEXT NOT NULL, -- pending, ok, failed, unknown or cancelled
+	result     TEXT NOT NULL DEFAULT '', -- JSON
+	created_at INTEGER NOT NULL,
+	done_at    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS device_commands_pubkey ON device_commands(pubkey, status, id);

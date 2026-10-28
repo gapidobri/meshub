@@ -13,16 +13,21 @@
 //	cp examples/rak4631/config.go.example examples/rak4631/config.go
 //	tinygo flash -target rak4631 ./examples/rak4631
 //
-// Config keys the hub can set for it:
+// Config keys the hub can set for it (a config with others out of range is
+// rejected, and the web UI shows why):
 //
-//	interval_s     seconds between check-ins (default settings.Interval)
+//	interval_s     seconds between check-ins, at least 10 (default settings.Interval)
 //	pin_holdoff_s  seconds to ignore the wake pin after it fired (default 60)
+//
+// Besides the built-in commands (logs, reset), it runs "status", which
+// returns its battery voltage, wake pin state and queued events.
 package main
 
 import (
 	"context"
 	"errors"
 	"machine"
+	"strconv"
 	"time"
 
 	meshcore "github.com/gapidobri/meshcore-go"
@@ -109,7 +114,10 @@ func main() {
 	if !ok {
 		fail("config", errors.New("HubPublicKey must be 64 hex characters"))
 	}
-	n, err := node.New(node.Config{
+	wake := newWakePin(config.WakePin)
+	bat := newBattery()
+	var n *node.Node
+	n, err = node.New(node.Config{
 		Radio:    radio,
 		Millis:   meshcore.NewSystemMillis(),
 		RNG:      hwRNG{},
@@ -119,14 +127,23 @@ func main() {
 		Program:  config.Program,
 		Firmware: firmwareVersion,
 		Claim:    config.Claim,
+		Validate: validateConfig,
+		Command: func(name string, _ hubproto.Value) (hubproto.Value, error) {
+			if name != "status" {
+				return hubproto.Null(), node.ErrUnknownCommand
+			}
+			v := hubproto.Map()
+			v.Set("battery_mv", hubproto.Int(int64(bat.millivolts())))
+			v.Set("wake_pin", hubproto.Bool(config.WakePin.Get()))
+			v.Set("pending_events", hubproto.Int(int64(n.Pending())))
+			return v, nil
+		},
 	})
 	if err != nil {
 		fail("node", err)
 	}
 	println("node", n.PublicKey())
-
-	wake := newWakePin(config.WakePin)
-	bat := newBattery()
+	n.Log(firmwareVersion + " booted")
 	reason := uint8(hubproto.WakePowerOn)
 	var holdoffUntil time.Time
 	for {
@@ -143,7 +160,8 @@ func main() {
 
 		interval := checkInInterval(n, err)
 		holdoff := time.Duration(n.Config().Get("pin_holdoff_s").Int(int64(defaultHoldoff/time.Second))) * time.Second
-		println("sync:", status(err), "config v", n.ConfigVersion(), "pending events", n.Pending(), "next check-in in", interval.String())
+		logf(n, "sync: "+status(err)+", config v"+strconv.Itoa(int(n.ConfigVersion()))+", "+
+			strconv.Itoa(n.Pending())+" events pending, next check-in in "+interval.String())
 
 		// Sleep until the check-in is due or the pin fires. For the hold-off
 		// after the pin last fired, it is ignored; anything latched while
@@ -165,14 +183,31 @@ func main() {
 		radio.Begin()
 
 		if reason == hubproto.WakePin {
-			println("wake pin fired")
-			data := hubproto.Map()
-			data.Set("at", hubproto.Int(time.Now().Unix()))
-			if err := n.Report("pin", data); err != nil {
-				println("report:", err.Error())
+			logf(n, "wake pin fired")
+			// The event carries its time; the hub shows when it happened.
+			if err := n.Report("pin", hubproto.Map()); err != nil {
+				logf(n, "report: "+err.Error())
 			}
 		}
 	}
+}
+
+// validateConfig rejects a config the program cannot run with.
+func validateConfig(cfg hubproto.Value) error {
+	if v := cfg.Get("interval_s"); !v.IsNull() && v.Int(0) < 10 {
+		return errors.New("interval_s must be at least 10")
+	}
+	if v := cfg.Get("pin_holdoff_s"); !v.IsNull() && v.Int(-1) < 0 {
+		return errors.New("pin_holdoff_s must be a non-negative integer")
+	}
+	return nil
+}
+
+// logf prints a line to the console and keeps it in the node's log buffer,
+// which the hub fetches with the "logs" command.
+func logf(n *node.Node, msg string) {
+	println(msg)
+	n.Log(msg)
 }
 
 // checkInInterval returns how long to sleep after a Sync.
@@ -182,8 +217,6 @@ func checkInInterval(n *node.Node, err error) time.Duration {
 		return retryPending
 	case err != nil:
 		return retryNoReply
-	case n.SleepHint() > 0:
-		return n.SleepHint()
 	}
 	return time.Duration(n.Config().Get("interval_s").Int(int64(config.Interval/time.Second))) * time.Second
 }

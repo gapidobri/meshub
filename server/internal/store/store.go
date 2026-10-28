@@ -22,6 +22,27 @@ var migrations = []string{
 	// 1: reception paths, for routing replies to devices
 	`ALTER TABLE receptions ADD COLUMN path_len INTEGER NOT NULL DEFAULT 0; -- MeshCore encoded path length
 	 ALTER TABLE receptions ADD COLUMN path BLOB NOT NULL DEFAULT x'';     -- repeater hashes, in the order traversed`,
+	// 2: protocol version 2: event times and config validation
+	`ALTER TABLE events ADD COLUMN device_time INTEGER NOT NULL DEFAULT 0;      -- when it happened by the device's clock, 0 if unknown
+	 ALTER TABLE devices ADD COLUMN rejected_version INTEGER NOT NULL DEFAULT 0; -- last config version the device rejected
+	 ALTER TABLE devices ADD COLUMN config_error TEXT NOT NULL DEFAULT '';      -- and why`,
+	// 3: event IDs, which applications page through and resume from
+	`CREATE TABLE events_v3 (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT, -- never reused
+		pubkey      TEXT NOT NULL REFERENCES devices(pubkey) ON DELETE CASCADE,
+		event_seq   INTEGER NOT NULL,
+		kind        TEXT NOT NULL,
+		data        TEXT NOT NULL, -- JSON
+		received_at INTEGER NOT NULL,
+		device_time INTEGER NOT NULL DEFAULT 0,
+		UNIQUE (pubkey, event_seq)
+	 );
+	 INSERT INTO events_v3 (pubkey, event_seq, kind, data, received_at, device_time)
+		SELECT pubkey, event_seq, kind, data, received_at, device_time FROM events
+		ORDER BY received_at, pubkey, event_seq;
+	 DROP TABLE events;
+	 ALTER TABLE events_v3 RENAME TO events;
+	 CREATE INDEX events_received_at ON events(received_at);`,
 }
 
 func migrate(db *sql.DB) error {
@@ -74,6 +95,9 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// Ping checks that the database is usable.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 func millis(t time.Time) int64 { return t.UnixMilli() }
 
@@ -345,6 +369,12 @@ func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
 		}
 	}
 	return out, links.Err()
+}
+
+// PruneEvents deletes events received before before.
+func (s *Store) PruneEvents(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE received_at < ?`, millis(before))
+	return err
 }
 
 // Prune deletes packets and receptions older than before.

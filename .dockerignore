@@ -1,0 +1,8 @@
+.git
+build
+examples
+gateway
+node
+mosquitto
+**/*.db
+**/*.db-*

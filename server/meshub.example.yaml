@@ -1,0 +1,47 @@
+# meshub backend configuration. Copy to meshub.yaml (read from the working
+# directory or /etc/meshub), or pass --config. Every key can also be set
+# with an environment variable: MESHUB_ and the key with dots as
+# underscores, e.g. MESHUB_MQTT_PASSWORD or MESHUB_API_TOKENS (comma
+# separated). Flags override both. The values below are the defaults.
+
+log:
+  level: info  # debug, info, warn or error
+  format: text # text, or json for log collectors
+
+db:
+  # SQLite database. It holds the hub's private key: back it up.
+  path: meshub.db
+
+retention:
+  packets: 168h # raw packets and receptions
+  events: 0s    # device events; 0 keeps them
+
+http:
+  addr: ":8080"
+
+api:
+  # Bearer tokens that authorize /api/v1, at least 16 characters each, e.g.
+  # from `openssl rand -hex 32`. With none, the API is open.
+  tokens: []
+
+ui:
+  enabled: true
+  # Basic auth for the web UI. With no password, the UI is open.
+  username: admin
+  password: ""
+
+mqtt:
+  broker: tcp://localhost:1883 # ssl:// or tls:// for TLS, ws:// or wss:// for WebSocket
+  client_id: ""                # default meshub-server-{hostname}; unique per backend
+  username: ""
+  password: ""
+
+hub:
+  name: meshub           # the name the hub advertises on the mesh
+  advert_interval: 12h   # how often it floods its advert; 0 disables
+  auto_pair: false       # accept every device without approval (development only)
+
+apps:
+  # Publish device events, status and command updates on
+  # meshub/app/v1/{program}/devices/{pubkey}/... (see proto/appproto).
+  enabled: true

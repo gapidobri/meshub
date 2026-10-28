@@ -16,29 +16,34 @@ const (
 
 // Device is a node paired (or asking to pair) with the hub.
 type Device struct {
-	PubKey        string    `json:"pubkey"`
-	Status        string    `json:"status"`
-	Program       string    `json:"program"`
-	Firmware      string    `json:"firmware"`
-	Claim         string    `json:"claim"`
-	LastSeq       int64     `json:"-"`
-	ConfigVersion uint32    `json:"config_version"` // as reported by the device
-	WantVersion   uint32    `json:"want_version"`   // the hub's config version for it
-	BatteryMV     int       `json:"battery_mv"`
-	WakeReason    int       `json:"wake_reason"`
-	UptimeS       uint32    `json:"uptime_s"`
-	LastHelloAt   time.Time `json:"last_hello_at"`
-	JoinedAt      time.Time `json:"joined_at"`
+	PubKey        string `json:"pubkey"`
+	Status        string `json:"status"`
+	Program       string `json:"program"`
+	Firmware      string `json:"firmware"`
+	Claim         string `json:"claim"`
+	LastSeq       int64  `json:"-"`
+	ConfigVersion uint32 `json:"config_version"` // as reported by the device
+	WantVersion   uint32 `json:"want_version"`   // the hub's config version for it
+	// RejectedVersion is the last config version the device rejected, and
+	// ConfigError why.
+	RejectedVersion uint32    `json:"rejected_version"`
+	ConfigError     string    `json:"config_error"`
+	BatteryMV       int       `json:"battery_mv"`
+	WakeReason      int       `json:"wake_reason"`
+	UptimeS         uint32    `json:"uptime_s"`
+	LastHelloAt     time.Time `json:"last_hello_at"`
+	JoinedAt        time.Time `json:"joined_at"`
 }
 
 const deviceColumns = `d.pubkey, d.status, d.program, d.firmware, d.claim, d.last_seq, d.config_version,
-	coalesce(c.version, 0), d.battery_mv, d.wake_reason, d.uptime_s, d.last_hello_at, d.joined_at`
+	coalesce(c.version, 0), d.rejected_version, d.config_error, d.battery_mv, d.wake_reason, d.uptime_s,
+	d.last_hello_at, d.joined_at`
 
 func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var d Device
 	var hello, joined int64
 	err := sc.Scan(&d.PubKey, &d.Status, &d.Program, &d.Firmware, &d.Claim, &d.LastSeq, &d.ConfigVersion,
-		&d.WantVersion, &d.BatteryMV, &d.WakeReason, &d.UptimeS, &hello, &joined)
+		&d.WantVersion, &d.RejectedVersion, &d.ConfigError, &d.BatteryMV, &d.WakeReason, &d.UptimeS, &hello, &joined)
 	if hello > 0 {
 		d.LastHelloAt = time.UnixMilli(hello)
 	}
@@ -149,22 +154,36 @@ func (s *Store) RecordHello(ctx context.Context, pubKey string, h Hello, at time
 	return err
 }
 
+// RecordConfigStatus stores whether a device applied a config version.
+func (s *Store) RecordConfigStatus(ctx context.Context, pubKey string, version uint32, rejected bool, reason string) error {
+	if rejected {
+		_, err := s.db.ExecContext(ctx, `UPDATE devices SET rejected_version = ?, config_error = ? WHERE pubkey = ?`,
+			version, reason, pubKey)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE devices SET config_version = ? WHERE pubkey = ?`, version, pubKey)
+	return err
+}
+
 // DeviceConfig is the config the hub wants a device to have.
 type DeviceConfig struct {
-	Version uint32
-	CBOR    []byte
-	JSON    string
+	Version   uint32
+	CBOR      []byte
+	JSON      string
+	UpdatedAt time.Time
 }
 
 // Config returns a device's config, or a zero DeviceConfig (version 0,
 // empty) if it has none.
 func (s *Store) Config(ctx context.Context, pubKey string) (DeviceConfig, error) {
 	var c DeviceConfig
-	err := s.db.QueryRowContext(ctx, `SELECT version, cbor, json FROM device_configs WHERE pubkey = ?`, pubKey).
-		Scan(&c.Version, &c.CBOR, &c.JSON)
+	var at int64
+	err := s.db.QueryRowContext(ctx, `SELECT version, cbor, json, updated_at FROM device_configs WHERE pubkey = ?`, pubKey).
+		Scan(&c.Version, &c.CBOR, &c.JSON, &at)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DeviceConfig{}, nil
 	}
+	c.UpdatedAt = time.UnixMilli(at)
 	return c, err
 }
 
@@ -211,25 +230,43 @@ func (s *Store) Route(ctx context.Context, pubKey string) (Route, bool, error) {
 
 // Event is something a device reported.
 type Event struct {
-	Seq        uint32    `json:"seq"`
-	Kind       string    `json:"kind"`
-	Data       string    `json:"data"` // JSON
+	ID      int64  `json:"id"`
+	PubKey  string `json:"-"`
+	Program string `json:"-"` // the device's
+	Seq     uint32 `json:"seq"`
+	Kind    string `json:"kind"`
+	Data    string `json:"data"` // JSON
+	// DeviceTime is when it happened by the device's clock, zero if the
+	// device did not know.
+	DeviceTime time.Time `json:"device_time"`
 	ReceivedAt time.Time `json:"received_at"`
+}
+
+// Time is when the event happened: its device time if known, else when it
+// was received.
+func (e Event) Time() time.Time {
+	if e.DeviceTime.IsZero() {
+		return e.ReceivedAt
+	}
+	return e.DeviceTime
 }
 
 // AddEvent stores an event, ignoring a resend of one already stored.
 func (s *Store) AddEvent(ctx context.Context, pubKey string, e Event) error {
+	var deviceTime int64
+	if !e.DeviceTime.IsZero() {
+		deviceTime = millis(e.DeviceTime)
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (pubkey, event_seq, kind, data, received_at) VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT (pubkey, event_seq) DO NOTHING`, pubKey, e.Seq, e.Kind, e.Data, millis(e.ReceivedAt))
+		INSERT INTO events (pubkey, event_seq, kind, data, device_time, received_at) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (pubkey, event_seq) DO NOTHING`, pubKey, e.Seq, e.Kind, e.Data, deviceTime, millis(e.ReceivedAt))
 	return err
 }
 
-// Events returns a device's latest events, newest first.
-func (s *Store) Events(ctx context.Context, pubKey string, limit int) ([]Event, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_seq, kind, data, received_at FROM events WHERE pubkey = ?
-		ORDER BY received_at DESC, event_seq DESC LIMIT ?`, pubKey, limit)
+const eventColumns = `e.id, e.pubkey, d.program, e.event_seq, e.kind, e.data, e.device_time, e.received_at`
+
+func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,12 +274,63 @@ func (s *Store) Events(ctx context.Context, pubKey string, limit int) ([]Event, 
 	out := []Event{}
 	for rows.Next() {
 		var e Event
-		var at int64
-		if err := rows.Scan(&e.Seq, &e.Kind, &e.Data, &at); err != nil {
+		var deviceTime, at int64
+		if err := rows.Scan(&e.ID, &e.PubKey, &e.Program, &e.Seq, &e.Kind, &e.Data, &deviceTime, &at); err != nil {
 			return nil, err
+		}
+		if deviceTime != 0 {
+			e.DeviceTime = time.UnixMilli(deviceTime)
 		}
 		e.ReceivedAt = time.UnixMilli(at)
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// Events returns a device's latest events, newest first by when they
+// happened.
+func (s *Store) Events(ctx context.Context, pubKey string, limit int) ([]Event, error) {
+	return s.queryEvents(ctx, `SELECT `+eventColumns+` FROM events e JOIN devices d ON d.pubkey = e.pubkey
+		WHERE e.pubkey = ?
+		ORDER BY coalesce(nullif(e.device_time, 0), e.received_at) DESC, e.event_seq DESC LIMIT ?`, pubKey, limit)
+}
+
+// EventQuery selects events by ID, the order the backend stored them in.
+type EventQuery struct {
+	PubKey  string // only this device's, if set
+	Program string // only devices running this, if set
+	After   int64  // only IDs above this
+	Before  int64  // only IDs below this, if set
+	Desc    bool   // newest first
+	Limit   int
+}
+
+// EventsByID returns the events q selects.
+func (s *Store) EventsByID(ctx context.Context, q EventQuery) ([]Event, error) {
+	query := `SELECT ` + eventColumns + ` FROM events e JOIN devices d ON d.pubkey = e.pubkey WHERE e.id > ?`
+	args := []any{q.After}
+	if q.Before > 0 {
+		query += ` AND e.id < ?`
+		args = append(args, q.Before)
+	}
+	if q.PubKey != "" {
+		query += ` AND e.pubkey = ?`
+		args = append(args, q.PubKey)
+	}
+	if q.Program != "" {
+		query += ` AND d.program = ?`
+		args = append(args, q.Program)
+	}
+	query += ` ORDER BY e.id`
+	if q.Desc {
+		query += ` DESC`
+	}
+	return s.queryEvents(ctx, query+` LIMIT ?`, append(args, q.Limit)...)
+}
+
+// LastEventID returns the highest event ID, 0 if there are no events.
+func (s *Store) LastEventID(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT coalesce(max(id), 0) FROM events`).Scan(&id)
+	return id, err
 }

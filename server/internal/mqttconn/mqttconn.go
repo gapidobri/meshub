@@ -18,6 +18,9 @@ type Config struct {
 	ClientID string
 	Username string
 	Password string
+	// OnConnect, if set, runs in its own goroutine after every connect,
+	// once the subscriptions are made.
+	OnConnect func()
 }
 
 // Subscription routes messages matching Filter to Handle.
@@ -71,6 +74,9 @@ func Connect(cfg Config, log *slog.Logger, subs ...Subscription) *Conn {
 				}
 			}
 			log.Info("mqtt connected", "broker", cfg.Broker)
+			if cfg.OnConnect != nil {
+				go cfg.OnConnect()
+			}
 		}).
 		SetConnectionAttemptHandler(func(broker *url.URL, tc *tls.Config) *tls.Config {
 			log.Info("mqtt connecting", "broker", broker.Redacted())
@@ -87,12 +93,21 @@ func Connect(cfg Config, log *slog.Logger, subs ...Subscription) *Conn {
 
 // Publish sends a QoS 0 message.
 func (c *Conn) Publish(topic string, payload []byte) error {
-	t := c.client.Publish(topic, 0, false, payload)
+	return c.PublishMessage(topic, 0, false, payload)
+}
+
+// PublishMessage sends a message, waiting until it is written (QoS 0) or
+// acknowledged by the broker (QoS 1 and 2).
+func (c *Conn) PublishMessage(topic string, qos byte, retain bool, payload []byte) error {
+	t := c.client.Publish(topic, qos, retain, payload)
 	if !t.WaitTimeout(publishTimeout) {
 		return errPublishTimeout
 	}
 	return t.Error()
 }
+
+// Connected reports whether the connection is up.
+func (c *Conn) Connected() bool { return c.client.IsConnectionOpen() }
 
 // Close disconnects from the broker.
 func (c *Conn) Close() { c.client.Disconnect(250) }

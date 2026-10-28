@@ -161,11 +161,16 @@ func TestMessagesRoundTrip(t *testing.T) {
 		&Join{Program: "hydrant", Firmware: "1.0", Claim: "AB12"},
 		&Hello{ConfigVersion: 5, WakeReason: WakePin, BatteryMV: 3700, UptimeS: 12, Firmware: "1.0"},
 		&ConfigGet{ConfigVersion: 5, Offset: 128},
-		&Event{EventSeq: 17, Kind: "flow", Data: data},
+		&Events{Events: []Event{{Seq: 17, Time: 1_800_000_000, Kind: "flow", Data: data}, {Seq: 18, Kind: "pin", Data: Null()}}},
+		&ConfigStatus{ConfigVersion: 5, Status: ConfigRejected, Reason: "interval_s must be positive"},
+		&CommandGet{},
+		&CommandResult{ID: 7, Status: CommandOK, Result: data},
+		&Fragment{Xfer: 0xBEEF, Total: 400, Offset: 154, Data: bytes.Repeat([]byte{3}, FragmentSize)},
 		&JoinReply{Status: JoinPending},
-		&HelloReply{Time: 1_800_000_000, PathLen: 0x42, Path: []byte{1, 2, 3, 4}, ConfigVersion: 5, ConfigLen: 300, ConfigCRC: 0xDEADBEEF, SleepS: 3600},
+		&HelloReply{Time: 1_800_000_000, PathLen: 0x42, Path: []byte{1, 2, 3, 4}, ConfigVersion: 5, ConfigLen: 300, ConfigCRC: 0xDEADBEEF, Commands: 2},
 		&ConfigChunk{ConfigVersion: 5, Offset: 256, Data: bytes.Repeat([]byte{7}, 44)},
-		&EventAck{EventSeq: 17},
+		&Ack{},
+		&Command{ID: 7, Name: "read", Args: data},
 		&Error{Code: ErrConfigChanged},
 	}
 	for _, m := range msgs {
@@ -182,15 +187,64 @@ func TestMessagesRoundTrip(t *testing.T) {
 		if seq != 99 || got.Type() != m.Type() {
 			t.Errorf("%T: seq %d type %x", m, seq, got.Type())
 		}
-		if e, ok := m.(*Event); ok {
-			if g := got.(*Event); g.EventSeq != e.EventSeq || g.Kind != e.Kind || !g.Data.Equal(e.Data) {
-				t.Errorf("event = %+v", g)
-			}
-			continue
-		}
-		if !reflect.DeepEqual(got, m) {
+		if !messageEqual(got, m) {
 			t.Errorf("%T: got %+v, want %+v", m, got, m)
 		}
+	}
+}
+
+// messageEqual compares messages, with Values compared by Equal.
+func messageEqual(a, b Message) bool {
+	switch a := a.(type) {
+	case *Events:
+		b, ok := b.(*Events)
+		if !ok || len(a.Events) != len(b.Events) {
+			return false
+		}
+		for i, e := range a.Events {
+			f := b.Events[i]
+			if e.Seq != f.Seq || e.Time != f.Time || e.Kind != f.Kind || !e.Data.Equal(f.Data) {
+				return false
+			}
+		}
+		return true
+	case *CommandResult:
+		b, ok := b.(*CommandResult)
+		return ok && a.ID == b.ID && a.Status == b.Status && a.Result.Equal(b.Result)
+	case *Command:
+		b, ok := b.(*Command)
+		return ok && a.ID == b.ID && a.Name == b.Name && a.Args.Equal(b.Args)
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func TestFragmentReassembly(t *testing.T) {
+	big := Map()
+	big.Set("blob", String(string(bytes.Repeat([]byte{'x'}, 500))))
+	m := &Events{Events: []Event{{Seq: 3, Kind: "big", Data: big}}}
+	if _, err := Encode(nil, 1, m, MaxPlaintext); err != ErrTooLarge {
+		t.Fatalf("Encode = %v, want ErrTooLarge", err)
+	}
+	body, err := AppendMessage(nil, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []byte
+	for off := 0; off < len(body); off += FragmentSize {
+		f := &Fragment{Xfer: 1, Total: uint16(len(body)), Offset: uint16(off), Data: body[off:min(off+FragmentSize, len(body))]}
+		enc, err := Encode(nil, uint32(off), f, MaxPlaintext)
+		if err != nil {
+			t.Fatalf("fragment at %d: %v", off, err)
+		}
+		_, dec, err := Decode(enc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, dec.(*Fragment).Data...)
+	}
+	back, err := DecodeMessage(got)
+	if err != nil || !messageEqual(back, m) {
+		t.Errorf("reassembled = %+v, %v", back, err)
 	}
 }
 
@@ -201,15 +255,24 @@ func TestEncodeLimits(t *testing.T) {
 	}
 	big := Map()
 	big.Set("blob", String(string(bytes.Repeat([]byte{'x'}, 200))))
-	if _, err := Encode(nil, 1, &Event{Kind: "k", Data: big}, MaxPlaintext); err == nil {
+	if _, err := Encode(nil, 1, &Events{Events: []Event{{Kind: "k", Data: big}}}, MaxPlaintext); err != ErrTooLarge {
 		t.Error("oversized event accepted")
 	}
 	if _, err := Encode(nil, 1, &HelloReply{PathLen: 2, Path: []byte{1}}, MaxPlaintext); err == nil {
 		t.Error("path not matching its length accepted")
 	}
-	// The largest chunk fits a datagram.
+	if _, err := Encode(nil, 1, &Events{Events: make([]Event, 256)}, 1<<16); err == nil {
+		t.Error("256 events accepted")
+	}
+	// The largest chunk and fragment fit a datagram.
 	if _, err := Encode(nil, 1, &ConfigChunk{Data: make([]byte, ChunkSize)}, MaxPlaintext); err != nil {
 		t.Errorf("full chunk: %v", err)
+	}
+	if _, err := Encode(nil, 1, &Fragment{Data: make([]byte, FragmentSize)}, MaxPlaintext); err != nil {
+		t.Errorf("full fragment: %v", err)
+	}
+	if _, err := Encode(nil, 1, &Fragment{Data: make([]byte, FragmentSize+1)}, 1<<16); err == nil {
+		t.Error("oversized fragment accepted")
 	}
 }
 
@@ -217,7 +280,7 @@ func TestDecodeErrors(t *testing.T) {
 	ok, _ := Encode(nil, 1, &Hello{Firmware: "x"}, MaxPlaintext)
 	for name, src := range map[string][]byte{
 		"short":     ok[:4],
-		"version":   append([]byte{1, 0, 0, 0, 9}, ok[5:]...),
+		"version":   append([]byte{1, 0, 0, 0, 1}, ok[5:]...),
 		"type":      append(append([]byte{}, ok[:5]...), 0x55),
 		"truncated": ok[:len(ok)-2],
 	} {

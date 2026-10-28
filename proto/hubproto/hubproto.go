@@ -10,7 +10,7 @@ import (
 )
 
 // Version is the protocol version carried in every message.
-const Version = 1
+const Version = 2
 
 // Plaintext size limits of the MeshCore datagrams messages travel in.
 const (
@@ -21,21 +21,36 @@ const (
 // ChunkSize is how many config bytes a ConfigChunk carries at most.
 const ChunkSize = 128
 
-const headerLen = 6
+// MaxMessage is the largest message (type and body) a node may send split
+// into Fragments.
+const MaxMessage = 2048
+
+// FragmentSize is how many bytes of a large message one Fragment carries.
+const FragmentSize = MaxPlaintext - headerLen - fragmentHeader
+
+const (
+	headerLen      = 6
+	fragmentHeader = 7 // xfer, total, offset, len
+)
 
 // Type identifies a message.
 type Type uint8
 
 const (
-	TypeJoin      Type = 0x01
-	TypeHello     Type = 0x02
-	TypeConfigGet Type = 0x03
-	TypeEvent     Type = 0x04
+	TypeJoin          Type = 0x01
+	TypeHello         Type = 0x02
+	TypeConfigGet     Type = 0x03
+	TypeEvents        Type = 0x04
+	TypeConfigStatus  Type = 0x05
+	TypeCommandGet    Type = 0x06
+	TypeCommandResult Type = 0x07
+	TypeFragment      Type = 0x08
 
 	TypeJoinReply   Type = 0x81
 	TypeHelloReply  Type = 0x82
 	TypeConfigChunk Type = 0x83
-	TypeEventAck    Type = 0x84
+	TypeAck         Type = 0x84
+	TypeCommand     Type = 0x85
 	TypeError       Type = 0xFF
 )
 
@@ -53,6 +68,19 @@ const (
 	JoinAccepted = 0
 	JoinPending  = 1
 	JoinRejected = 2
+)
+
+// ConfigStatus statuses.
+const (
+	ConfigApplied  = 0
+	ConfigRejected = 1
+)
+
+// CommandResult statuses.
+const (
+	CommandOK      = 0
+	CommandFailed  = 1 // Result is the error message
+	CommandUnknown = 2
 )
 
 // Error codes.
@@ -87,10 +115,42 @@ type ConfigGet struct {
 	Offset        uint16
 }
 
+// Events carries one or more events.
+type Events struct {
+	Events []Event
+}
+
+// Event is one event in an Events message.
 type Event struct {
-	EventSeq uint32
-	Kind     string
-	Data     Value
+	Seq  uint32
+	Time uint32 // when it happened, unix seconds by the node's clock; 0 if unknown
+	Kind string
+	Data Value
+}
+
+// ConfigStatus reports whether the node applied a config version.
+type ConfigStatus struct {
+	ConfigVersion uint32
+	Status        uint8
+	Reason        string // why it was rejected
+}
+
+type CommandGet struct{}
+
+type CommandResult struct {
+	ID     uint32
+	Status uint8
+	Result Value
+}
+
+// Fragment carries part of a message larger than a datagram. The hub
+// acknowledges each fragment but the last, which it answers as it would
+// the whole message.
+type Fragment struct {
+	Xfer   uint16 // identifies the message being sent
+	Total  uint16 // its length
+	Offset uint16
+	Data   []byte
 }
 
 type JoinReply struct {
@@ -104,7 +164,7 @@ type HelloReply struct {
 	ConfigVersion uint32
 	ConfigLen     uint16
 	ConfigCRC     uint32
-	SleepS        uint32 // suggested sleep; 0 lets the node decide
+	Commands      uint8 // commands waiting for the node
 }
 
 type ConfigChunk struct {
@@ -113,45 +173,72 @@ type ConfigChunk struct {
 	Data          []byte
 }
 
-type EventAck struct {
-	EventSeq uint32
+// Ack accepts a request that needs no other answer: events, a config
+// status, a command result or a fragment.
+type Ack struct{}
+
+// Command is a command for the node. ID 0 means there is none.
+type Command struct {
+	ID   uint32
+	Name string
+	Args Value
 }
 
 type Error struct {
 	Code uint8
 }
 
-func (*Join) Type() Type        { return TypeJoin }
-func (*Hello) Type() Type       { return TypeHello }
-func (*ConfigGet) Type() Type   { return TypeConfigGet }
-func (*Event) Type() Type       { return TypeEvent }
-func (*JoinReply) Type() Type   { return TypeJoinReply }
-func (*HelloReply) Type() Type  { return TypeHelloReply }
-func (*ConfigChunk) Type() Type { return TypeConfigChunk }
-func (*EventAck) Type() Type    { return TypeEventAck }
-func (*Error) Type() Type       { return TypeError }
+func (*Join) Type() Type          { return TypeJoin }
+func (*Hello) Type() Type         { return TypeHello }
+func (*ConfigGet) Type() Type     { return TypeConfigGet }
+func (*Events) Type() Type        { return TypeEvents }
+func (*ConfigStatus) Type() Type  { return TypeConfigStatus }
+func (*CommandGet) Type() Type    { return TypeCommandGet }
+func (*CommandResult) Type() Type { return TypeCommandResult }
+func (*Fragment) Type() Type      { return TypeFragment }
+func (*JoinReply) Type() Type     { return TypeJoinReply }
+func (*HelloReply) Type() Type    { return TypeHelloReply }
+func (*ConfigChunk) Type() Type   { return TypeConfigChunk }
+func (*Ack) Type() Type           { return TypeAck }
+func (*Command) Type() Type       { return TypeCommand }
+func (*Error) Type() Type         { return TypeError }
+
+// ErrTooLarge is returned by Encode for a message that does not fit.
+var ErrTooLarge = errors.New("hubproto: message larger than a datagram")
 
 var (
-	errShort    = errors.New("hubproto: message truncated")
-	errVersion  = errors.New("hubproto: unsupported protocol version")
-	errType     = errors.New("hubproto: unknown message type")
-	errStrLong  = errors.New("hubproto: string longer than 255 bytes")
-	errTooLarge = errors.New("hubproto: message larger than a datagram")
-	errPath     = errors.New("hubproto: invalid path")
+	errShort   = errors.New("hubproto: message truncated")
+	errVersion = errors.New("hubproto: unsupported protocol version")
+	errType    = errors.New("hubproto: unknown message type")
+	errStrLong = errors.New("hubproto: string longer than 255 bytes")
+	errPath    = errors.New("hubproto: invalid path")
+	errCount   = errors.New("hubproto: too many events")
 )
 
-// Encode appends the plaintext of m with sequence number seq. It fails if
-// the message does not fit max bytes (MaxPlaintext or MaxAnonPlaintext).
+// Encode appends the plaintext of m with sequence number seq. It fails with
+// ErrTooLarge if the message does not fit max bytes (MaxPlaintext or
+// MaxAnonPlaintext).
 func Encode(dst []byte, seq uint32, m Message, max int) ([]byte, error) {
 	start := len(dst)
 	dst = binary.LittleEndian.AppendUint32(dst, seq)
-	dst = append(dst, Version, byte(m.Type()))
-	dst, err := m.appendBody(dst)
+	dst = append(dst, Version)
+	dst, err := AppendMessage(dst, m)
 	if err != nil {
 		return dst[:start], err
 	}
 	if len(dst)-start > max {
-		return dst[:start], errTooLarge
+		return dst[:start], ErrTooLarge
+	}
+	return dst, nil
+}
+
+// AppendMessage appends m's type and body, the part of a plaintext that
+// Fragments carry.
+func AppendMessage(dst []byte, m Message) ([]byte, error) {
+	start := len(dst)
+	dst, err := m.appendBody(append(dst, byte(m.Type())))
+	if err != nil {
+		return dst[:start], err
 	}
 	return dst, nil
 }
@@ -165,40 +252,72 @@ func Decode(src []byte) (seq uint32, m Message, err error) {
 	if src[4] != Version {
 		return seq, nil, errVersion
 	}
-	r := reader{b: src[headerLen:]}
-	switch Type(src[5]) {
+	m, err = DecodeMessage(src[5:])
+	return seq, m, err
+}
+
+// DecodeMessage parses a message's type and body, as reassembled from
+// Fragments.
+func DecodeMessage(src []byte) (Message, error) {
+	if len(src) < 1 {
+		return nil, errShort
+	}
+	var m Message
+	r := reader{b: src[1:]}
+	switch Type(src[0]) {
 	case TypeJoin:
 		m = &Join{Program: r.str(), Firmware: r.str(), Claim: r.str()}
 	case TypeHello:
 		m = &Hello{ConfigVersion: r.u32(), WakeReason: r.u8(), BatteryMV: r.u16(), UptimeS: r.u32(), Firmware: r.str()}
 	case TypeConfigGet:
 		m = &ConfigGet{ConfigVersion: r.u32(), Offset: r.u16()}
-	case TypeEvent:
-		e := &Event{EventSeq: r.u32(), Kind: r.str()}
-		e.Data = r.value()
+	case TypeEvents:
+		n := int(r.u8())
+		e := &Events{Events: make([]Event, 0, n)}
+		for i := 0; i < n && r.err == nil; i++ {
+			ev := Event{Seq: r.u32(), Time: r.u32(), Kind: r.str()}
+			ev.Data = r.value()
+			e.Events = append(e.Events, ev)
+		}
 		m = e
+	case TypeConfigStatus:
+		m = &ConfigStatus{ConfigVersion: r.u32(), Status: r.u8(), Reason: r.str()}
+	case TypeCommandGet:
+		m = &CommandGet{}
+	case TypeCommandResult:
+		c := &CommandResult{ID: r.u32(), Status: r.u8()}
+		c.Result = r.value()
+		m = c
+	case TypeFragment:
+		f := &Fragment{Xfer: r.u16(), Total: r.u16(), Offset: r.u16()}
+		f.Data = r.bytes(int(r.u8()))
+		m = f
 	case TypeJoinReply:
 		m = &JoinReply{Status: r.u8()}
 	case TypeHelloReply:
 		h := &HelloReply{Time: r.u32(), PathLen: r.u8()}
 		h.Path = r.bytes(pathByteLen(h.PathLen))
-		h.ConfigVersion, h.ConfigLen, h.ConfigCRC, h.SleepS = r.u32(), r.u16(), r.u32(), r.u32()
+		h.ConfigVersion, h.ConfigLen, h.ConfigCRC, h.Commands = r.u32(), r.u16(), r.u32(), r.u8()
 		m = h
 	case TypeConfigChunk:
 		c := &ConfigChunk{ConfigVersion: r.u32(), Offset: r.u16()}
 		c.Data = r.bytes(int(r.u8()))
 		m = c
-	case TypeEventAck:
-		m = &EventAck{EventSeq: r.u32()}
+	case TypeAck:
+		m = &Ack{}
+	case TypeCommand:
+		c := &Command{ID: r.u32(), Name: r.str()}
+		c.Args = r.value()
+		m = c
 	case TypeError:
 		m = &Error{Code: r.u8()}
 	default:
-		return seq, nil, errType
+		return nil, errType
 	}
 	if r.err != nil {
-		return seq, nil, r.err
+		return nil, r.err
 	}
-	return seq, m, nil
+	return m, nil
 }
 
 func (m *Join) appendBody(dst []byte) ([]byte, error) {
@@ -218,13 +337,44 @@ func (m *ConfigGet) appendBody(dst []byte) ([]byte, error) {
 	return binary.LittleEndian.AppendUint16(dst, m.Offset), nil
 }
 
-func (m *Event) appendBody(dst []byte) ([]byte, error) {
-	dst = binary.LittleEndian.AppendUint32(dst, m.EventSeq)
-	dst, err := appendStrs(dst, m.Kind)
-	if err != nil {
-		return dst, err
+func (m *Events) appendBody(dst []byte) ([]byte, error) {
+	if len(m.Events) > 255 {
+		return dst, errCount
 	}
-	return m.Data.AppendCBOR(dst), nil
+	dst = append(dst, byte(len(m.Events)))
+	for _, e := range m.Events {
+		dst = binary.LittleEndian.AppendUint32(dst, e.Seq)
+		dst = binary.LittleEndian.AppendUint32(dst, e.Time)
+		var err error
+		if dst, err = appendStrs(dst, e.Kind); err != nil {
+			return dst, err
+		}
+		dst = e.Data.AppendCBOR(dst)
+	}
+	return dst, nil
+}
+
+func (m *ConfigStatus) appendBody(dst []byte) ([]byte, error) {
+	dst = binary.LittleEndian.AppendUint32(dst, m.ConfigVersion)
+	return appendStrs(append(dst, m.Status), m.Reason)
+}
+
+func (*CommandGet) appendBody(dst []byte) ([]byte, error) { return dst, nil }
+
+func (m *CommandResult) appendBody(dst []byte) ([]byte, error) {
+	dst = binary.LittleEndian.AppendUint32(dst, m.ID)
+	return m.Result.AppendCBOR(append(dst, m.Status)), nil
+}
+
+func (m *Fragment) appendBody(dst []byte) ([]byte, error) {
+	if len(m.Data) > FragmentSize {
+		return dst, ErrTooLarge
+	}
+	dst = binary.LittleEndian.AppendUint16(dst, m.Xfer)
+	dst = binary.LittleEndian.AppendUint16(dst, m.Total)
+	dst = binary.LittleEndian.AppendUint16(dst, m.Offset)
+	dst = append(dst, byte(len(m.Data)))
+	return append(dst, m.Data...), nil
 }
 
 func (m *JoinReply) appendBody(dst []byte) ([]byte, error) { return append(dst, m.Status), nil }
@@ -240,12 +390,12 @@ func (m *HelloReply) appendBody(dst []byte) ([]byte, error) {
 	dst = binary.LittleEndian.AppendUint32(dst, m.ConfigVersion)
 	dst = binary.LittleEndian.AppendUint16(dst, m.ConfigLen)
 	dst = binary.LittleEndian.AppendUint32(dst, m.ConfigCRC)
-	return binary.LittleEndian.AppendUint32(dst, m.SleepS), nil
+	return append(dst, m.Commands), nil
 }
 
 func (m *ConfigChunk) appendBody(dst []byte) ([]byte, error) {
 	if len(m.Data) > ChunkSize {
-		return dst, errTooLarge
+		return dst, ErrTooLarge
 	}
 	dst = binary.LittleEndian.AppendUint32(dst, m.ConfigVersion)
 	dst = binary.LittleEndian.AppendUint16(dst, m.Offset)
@@ -253,8 +403,15 @@ func (m *ConfigChunk) appendBody(dst []byte) ([]byte, error) {
 	return append(dst, m.Data...), nil
 }
 
-func (m *EventAck) appendBody(dst []byte) ([]byte, error) {
-	return binary.LittleEndian.AppendUint32(dst, m.EventSeq), nil
+func (*Ack) appendBody(dst []byte) ([]byte, error) { return dst, nil }
+
+func (m *Command) appendBody(dst []byte) ([]byte, error) {
+	dst = binary.LittleEndian.AppendUint32(dst, m.ID)
+	dst, err := appendStrs(dst, m.Name)
+	if err != nil {
+		return dst, err
+	}
+	return m.Args.AppendCBOR(dst), nil
 }
 
 func (m *Error) appendBody(dst []byte) ([]byte, error) { return append(dst, m.Code), nil }

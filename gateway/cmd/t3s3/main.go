@@ -2,7 +2,9 @@
 
 // Command t3s3 is the meshub MQTT gateway firmware for the LilyGo T3S3
 // (ESP32-S3 + SX1262). It connects to WiFi, syncs the clock over NTP and
-// bridges the radio to an MQTT broker (see package gateway).
+// bridges the radio to an MQTT broker (see package gateway). The OLED shows
+// the boot steps and then the gateway's status; it blanks after a few minutes
+// and the BOOT button wakes it.
 //
 // Settings are compiled in from config.go, which is gitignored. Create it
 // from the template, fill it in, then flash:
@@ -106,10 +108,13 @@ func main() {
 	println("meshub gateway", firmwareVersion)
 
 	pinTxLED.Configure(machine.PinConfig{Mode: machine.PinOutput})
+	screen.init()
+	screen.show(firmwareVersion, config.Name)
 
 	esp := &link.Esplink{}
 	netdev.UseNetdev(esp)
-	connectWiFi(esp)
+	ip := connectWiFi(esp)
+	screen.show(firmwareVersion, config.Name, "", "WiFi "+ip, "NTP "+ntpHost)
 	syncTime(esp)
 	go func() {
 		for {
@@ -172,6 +177,7 @@ func main() {
 	println("gateway", gw.PublicKey())
 
 	gw.Begin()
+	go screen.run(gw, ip)
 	go gw.RunMQTT(context.Background(), func() (net.Conn, error) {
 		return net.Dial("tcp", config.Broker)
 	})
@@ -198,17 +204,20 @@ func reset() {
 	}
 }
 
-// connectWiFi blocks until the WiFi connection is up.
-func connectWiFi(esp *link.Esplink) {
+// connectWiFi blocks until the WiFi connection is up and returns the
+// gateway's IP address.
+func connectWiFi(esp *link.Esplink) string {
 	for backoff := time.Second; ; backoff = min(backoff*2, time.Minute) {
 		println("connecting to WiFi", config.WiFiSSID)
+		screen.show(firmwareVersion, config.Name, "", "WiFi "+config.WiFiSSID)
 		err := esp.NetConnect(&nl.ConnectParams{Ssid: config.WiFiSSID, Passphrase: config.WiFiPassword})
 		if err == nil {
 			addr, _ := esp.Addr()
 			println("WiFi connected,", addr.String())
-			return
+			return addr.String()
 		}
 		println("WiFi:", err.Error())
+		screen.show(firmwareVersion, config.Name, "", "WiFi "+config.WiFiSSID, err.Error())
 		time.Sleep(backoff)
 	}
 }

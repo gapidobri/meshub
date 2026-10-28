@@ -5,13 +5,12 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +28,10 @@ type Hub interface {
 	Status() hub.Status
 	SendAdvert(ctx context.Context) (int, error)
 	SetConfig(ctx context.Context, device string, jsonConfig []byte) (uint32, error)
+	QueueCommand(ctx context.Context, device, name string, jsonArgs []byte) (uint32, error)
+	CancelCommand(ctx context.Context, device string, id uint32) error
+	SetDeviceStatus(ctx context.Context, device, status string) error
+	DeleteDevice(ctx context.Context, device string) error
 }
 
 // page is what the shared layout needs.
@@ -39,7 +42,7 @@ type page struct {
 	Message string
 }
 
-// Handler serves the UI at / and the API under /api/.
+// Handler serves the UI.
 func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 	funcs := template.FuncMap{
 		"ago":         ago,
@@ -49,6 +52,8 @@ func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 		"nodeType":    nodeType,
 		"configState": configState,
 		"wakeReason":  wakeReason,
+		"text":        jsonText,
+		"pending":     func(c store.Command) bool { return c.Status == store.CommandPending },
 	}
 	parse := func(name string) *template.Template {
 		return template.Must(template.New(name).Funcs(funcs).ParseFS(files, "layout.html", name))
@@ -146,6 +151,11 @@ func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 			serverError(w, log, err)
 			return
 		}
+		commands, err := st.Commands(r.Context(), d.PubKey, 20)
+		if err != nil {
+			serverError(w, log, err)
+			return
+		}
 		configJSON := cfg.JSON
 		if configJSON == "" {
 			configJSON = "{}"
@@ -156,7 +166,8 @@ func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 			Device     store.Device
 			ConfigJSON string
 			Events     []store.Event
-		}{page{Title: d.Program + " " + d.PubKey[:8] + " · meshub", Header: d.Program, Message: r.URL.Query().Get("msg")}, d, configJSON, events})
+			Commands   []store.Command
+		}{page{Title: d.Program + " " + d.PubKey[:8] + " · meshub", Header: d.Program, Message: r.URL.Query().Get("msg")}, d, configJSON, events, commands})
 	})
 	mux.HandleFunc("POST /devices/{pubkey}/status", func(w http.ResponseWriter, r *http.Request) {
 		d, ok := lookup(w, r)
@@ -168,11 +179,10 @@ func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 			http.Error(w, "bad status", http.StatusBadRequest)
 			return
 		}
-		if err := st.SetDeviceStatus(r.Context(), d.PubKey, status); err != nil {
+		if err := h.SetDeviceStatus(r.Context(), d.PubKey, status); err != nil {
 			serverError(w, log, err)
 			return
 		}
-		log.Info("device status set", "device", d.PubKey[:8], "status", status)
 		msg := "Approved. The device is accepted the next time it asks to pair."
 		if status == store.DeviceRejected {
 			msg = "Rejected."
@@ -184,7 +194,7 @@ func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 		if !ok {
 			return
 		}
-		if err := st.DeleteDevice(r.Context(), d.PubKey); err != nil {
+		if err := h.DeleteDevice(r.Context(), d.PubKey); err != nil {
 			serverError(w, log, err)
 			return
 		}
@@ -202,56 +212,32 @@ func Handler(st *store.Store, h Hub, log *slog.Logger) http.Handler {
 		}
 		back(w, r, "/devices/"+d.PubKey, msg)
 	})
+	mux.HandleFunc("POST /devices/{pubkey}/commands", func(w http.ResponseWriter, r *http.Request) {
+		d, ok := lookup(w, r)
+		if !ok {
+			return
+		}
+		id, err := h.QueueCommand(r.Context(), d.PubKey, r.FormValue("name"), []byte(r.FormValue("args")))
+		msg := fmt.Sprintf("Command %d queued. The device runs it at its next check-in.", id)
+		if err != nil {
+			msg = "Not queued: " + err.Error()
+		}
+		back(w, r, "/devices/"+d.PubKey, msg)
+	})
+	mux.HandleFunc("POST /devices/{pubkey}/commands/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		d, ok := lookup(w, r)
+		if !ok {
+			return
+		}
+		msg := "Command cancelled."
+		if id, err := strconv.ParseUint(r.PathValue("id"), 10, 32); err != nil {
+			msg = "Bad command ID."
+		} else if err := h.CancelCommand(r.Context(), d.PubKey, uint32(id)); err != nil {
+			msg = "Not cancelled: " + err.Error()
+		}
+		back(w, r, "/devices/"+d.PubKey, msg)
+	})
 
-	// API.
-	mux.HandleFunc("GET /api/hub", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, log, h.Status(), nil)
-	})
-	mux.HandleFunc("POST /api/advert", func(w http.ResponseWriter, r *http.Request) {
-		n, err := h.SendAdvert(r.Context())
-		if errors.Is(err, hub.ErrNoGateway) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		writeJSON(w, log, map[string]int{"gateways": n}, err)
-	})
-	mux.HandleFunc("GET /api/gateways", func(w http.ResponseWriter, r *http.Request) {
-		gws, err := st.Gateways(r.Context())
-		writeJSON(w, log, gws, err)
-	})
-	mux.HandleFunc("GET /api/nodes", func(w http.ResponseWriter, r *http.Request) {
-		nodes, err := st.Nodes(r.Context())
-		writeJSON(w, log, nodes, err)
-	})
-	mux.HandleFunc("GET /api/devices", func(w http.ResponseWriter, r *http.Request) {
-		devices, err := st.Devices(r.Context())
-		writeJSON(w, log, devices, err)
-	})
-	mux.HandleFunc("GET /api/devices/{pubkey}/events", func(w http.ResponseWriter, r *http.Request) {
-		d, ok := lookup(w, r)
-		if !ok {
-			return
-		}
-		events, err := st.Events(r.Context(), d.PubKey, 500)
-		writeJSON(w, log, events, err)
-	})
-	mux.HandleFunc("PUT /api/devices/{pubkey}/config", func(w http.ResponseWriter, r *http.Request) {
-		d, ok := lookup(w, r)
-		if !ok {
-			return
-		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		version, err := h.SetConfig(r.Context(), d.PubKey, body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		writeJSON(w, log, map[string]uint32{"version": version}, nil)
-	})
 	return mux
 }
 
@@ -269,11 +255,25 @@ func configState(d store.Device) string {
 	switch {
 	case d.WantVersion == 0:
 		return "none set"
+	case d.RejectedVersion == d.WantVersion:
+		return fmt.Sprintf("v%d rejected by the device: %s (has v%d)", d.WantVersion, d.ConfigError, d.ConfigVersion)
 	case d.ConfigVersion == d.WantVersion:
 		return fmt.Sprintf("v%d, in sync", d.WantVersion)
 	default:
 		return fmt.Sprintf("v%d waiting for the device (has v%d)", d.WantVersion, d.ConfigVersion)
 	}
+}
+
+// jsonText shows a JSON value, a string as its text.
+func jsonText(j string) string {
+	var s string
+	if json.Unmarshal([]byte(j), &s) == nil {
+		return s
+	}
+	if j == "null" {
+		return ""
+	}
+	return j
 }
 
 func wakeReason(r int) string {
@@ -306,15 +306,6 @@ func newGatewayView(g store.Gateway) gatewayView {
 	}
 	json.Unmarshal([]byte(g.Stats), &v.Stats)
 	return v
-}
-
-func writeJSON(w http.ResponseWriter, log *slog.Logger, v any, err error) {
-	if err != nil {
-		serverError(w, log, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
 }
 
 func serverError(w http.ResponseWriter, log *slog.Logger, err error) {

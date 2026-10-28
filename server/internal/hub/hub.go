@@ -37,6 +37,40 @@ const (
 // ErrNoGateway is returned when no gateway is online to transmit through.
 var ErrNoGateway = errors.New("hub: no gateway online")
 
+var (
+	// ErrInvalid is matched by errors about what the caller asked for, such
+	// as a malformed config.
+	ErrInvalid = errors.New("invalid")
+	// ErrUnknownDevice is returned for a device the hub does not know.
+	ErrUnknownDevice = errors.New("unknown device")
+	// ErrNotPending is returned for cancelling a command that is done.
+	ErrNotPending = errors.New("the command is no longer pending")
+)
+
+// invalidError is an ErrInvalid that reads as just its message.
+type invalidError struct{ err error }
+
+func (e invalidError) Error() string   { return e.err.Error() }
+func (e invalidError) Unwrap() []error { return []error{e.err, ErrInvalid} }
+
+func invalid(err error) error { return invalidError{err} }
+
+// Notifier hears of changes that applications are told about. Its methods
+// are called after the change is stored, and must not block.
+type Notifier interface {
+	DeviceChanged(device string)
+	DeviceDeleted(d store.Device)
+	EventsAdded()
+	CommandChanged(device string, id uint32)
+}
+
+type nopNotifier struct{}
+
+func (nopNotifier) DeviceChanged(string)          {}
+func (nopNotifier) DeviceDeleted(store.Device)    {}
+func (nopNotifier) EventsAdded()                  {}
+func (nopNotifier) CommandChanged(string, uint32) {}
+
 // Publisher publishes MQTT messages.
 type Publisher interface {
 	Publish(topic string, payload []byte) error
@@ -47,6 +81,8 @@ type Publisher interface {
 type Hub struct {
 	// AutoPair accepts every join without operator approval.
 	AutoPair bool
+	// Notify hears of changes to devices, their events and commands.
+	Notify Notifier
 
 	id   meshcore.LocalIdentity
 	name string
@@ -57,6 +93,9 @@ type Hub struct {
 
 	nextID atomic.Uint32
 	rx     *receiver
+
+	asmMu sync.Mutex
+	asm   map[string]*assembly // large messages arriving in fragments, by device
 
 	mu         sync.Mutex
 	pending    map[uint32]pendingTx
@@ -113,8 +152,10 @@ func New(id meshcore.LocalIdentity, name string, pub Publisher, st *store.Store,
 		pub:     pub,
 		st:      st,
 		log:     log,
+		Notify:  nopNotifier{},
 		now:     time.Now,
 		pending: map[uint32]pendingTx{},
+		asm:     map[string]*assembly{},
 	}
 	var b [4]byte
 	rand.Read(b[:])

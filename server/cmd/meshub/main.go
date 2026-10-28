@@ -1,126 +1,180 @@
 // Command meshub is the meshub backend: it ingests gateway traffic from MQTT
-// into SQLite and serves the web UI.
+// into SQLite, serves devices on the mesh, and serves the web UI and the
+// HTTP API for applications.
 package main
 
 import (
 	"context"
-	"errors"
-	"flag"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
+	"runtime/debug"
+	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/gapidobri/meshub/server/internal/api"
 	"github.com/gapidobri/meshub/server/internal/hub"
-	"github.com/gapidobri/meshub/server/internal/ingest"
-	"github.com/gapidobri/meshub/server/internal/mqttconn"
 	"github.com/gapidobri/meshub/server/internal/store"
-	"github.com/gapidobri/meshub/server/internal/web"
 )
 
-func main() {
-	var (
-		broker    = flag.String("mqtt", "tcp://localhost:1883", "MQTT broker URL")
-		mqttUser  = flag.String("mqtt-user", "", "MQTT username")
-		mqttPass  = flag.String("mqtt-pass", os.Getenv("MESHUB_MQTT_PASSWORD"), "MQTT password (default $MESHUB_MQTT_PASSWORD)")
-		dbPath    = flag.String("db", "meshub.db", "SQLite database path")
-		httpAddr  = flag.String("http", ":8080", "HTTP listen address")
-		retention = flag.Duration("retention", 7*24*time.Hour, "how long to keep packets and receptions")
-		name      = flag.String("name", "meshub", "name the hub advertises on the mesh")
-		advertInt = flag.Duration("advert-interval", 12*time.Hour, "how often the hub floods its advert (0 disables)")
-		autoPair  = flag.Bool("auto-pair", false, "accept every device that asks to pair, without approval (for development)")
-	)
-	flag.Parse()
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	cfg := config{*broker, *mqttUser, *mqttPass, *dbPath, *httpAddr, *retention, *name, *advertInt, *autoPair}
-	if err := run(log, cfg); err != nil {
-		log.Error("meshub", "err", err)
+func main() {
+	if err := rootCmd().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-type config struct {
-	broker, mqttUser, mqttPass string
-	dbPath, httpAddr           string
-	retention                  time.Duration
-	name                       string
-	advertInterval             time.Duration
-	autoPair                   bool
+func rootCmd() *cobra.Command {
+	root := &cobra.Command{
+		Use:          "meshub",
+		Short:        "The meshub backend",
+		Version:      fullVersion(),
+		SilenceUsage: true,
+	}
+	root.AddCommand(serveCmd(), openapiCmd(), identityCmd(), versionCmd(), healthcheckCmd())
+	return root
 }
 
-func run(log *slog.Logger, cfg config) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	st, err := store.Open(cfg.dbPath)
-	if err != nil {
-		return err
+func serveCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Run the backend",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig(cmd.Flags())
+			if err != nil {
+				return err
+			}
+			return serve(cmd.Context(), cfg, cfg.logger())
+		},
 	}
-	defer st.Close()
-
-	id, err := hub.LoadIdentity(ctx, st)
-	if err != nil {
-		return err
-	}
-
-	// The hub publishes through the connection it is subscribed on, so the
-	// connection is created after the hub and handed to it.
-	var conn *mqttconn.Conn
-	h := hub.New(id, cfg.name, publisherFunc(func(topic string, payload []byte) error {
-		return conn.Publish(topic, payload)
-	}), st, log)
-	h.AutoPair = cfg.autoPair
-	in := ingest.New(st, log)
-	in.Self = h.PublicKey()
-	in.OnSelfAdvert = h.NoteOwnAdvert
-	in.Hub = h
-
-	host, _ := os.Hostname()
-	conn = mqttconn.Connect(mqttconn.Config{
-		Broker:   cfg.broker,
-		ClientID: "meshub-server-" + host,
-		Username: cfg.mqttUser,
-		Password: cfg.mqttPass,
-	}, log, append(in.Subscriptions(ctx), h.Subscriptions()...)...)
-	defer conn.Close()
-	log.Info("hub identity", "name", cfg.name, "pubkey", h.PublicKey())
-
-	go h.RunAdverts(ctx, cfg.advertInterval)
-	go prune(ctx, log, st, cfg.retention)
-
-	srv := &http.Server{Addr: cfg.httpAddr, Handler: web.Handler(st, h, log)}
-	go func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		srv.Shutdown(shutdown)
-	}()
-	log.Info("serving", "addr", cfg.httpAddr, "db", cfg.dbPath)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		return err
-	}
-	return nil
+	addConfigFlags(cmd.Flags())
+	return cmd
 }
 
-type publisherFunc func(topic string, payload []byte) error
+func openapiCmd() *cobra.Command {
+	var format string
+	cmd := &cobra.Command{
+		Use:   "openapi",
+		Short: "Print the HTTP API's OpenAPI description",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			log := slog.New(slog.NewTextHandler(io.Discard, nil))
+			doc := api.Register(http.NewServeMux(), nil, nil, log, api.Options{Version: version}).OpenAPI()
+			var out []byte
+			var err error
+			switch format {
+			case "yaml":
+				out, err = doc.YAML()
+			case "json":
+				out, err = json.MarshalIndent(doc, "", "  ")
+				out = append(out, '\n')
+			default:
+				err = fmt.Errorf("unknown format %q", format)
+			}
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(out)
+			return err
+		},
+	}
+	cmd.Flags().StringVarP(&format, "format", "f", "yaml", "yaml or json")
+	return cmd
+}
 
-func (f publisherFunc) Publish(topic string, payload []byte) error { return f(topic, payload) }
+func identityCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "identity",
+		Short: "Print the hub's public key, which devices are built with",
+		Long:  "Print the hub's public key, which devices are built with. The identity is created on first use.",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConfig(cmd.Flags())
+			if err != nil {
+				return err
+			}
+			st, err := store.Open(cfg.DB.Path)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			id, err := hub.LoadIdentity(context.Background(), st)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), id.String())
+			return nil
+		},
+	}
+	addConfigFlags(cmd.Flags())
+	return cmd
+}
 
-// prune deletes old packets hourly.
-func prune(ctx context.Context, log *slog.Logger, st *store.Store, retention time.Duration) {
-	t := time.NewTicker(time.Hour)
-	defer t.Stop()
-	for {
-		if err := st.Prune(ctx, time.Now().Add(-retention)); err != nil && ctx.Err() == nil {
-			log.Warn("prune", "err", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
+// healthcheckCmd checks a running backend, for container health checks in
+// images without a shell.
+func healthcheckCmd() *cobra.Command {
+	var url string
+	cmd := &cobra.Command{
+		Use:    "healthcheck",
+		Short:  "Exit with an error unless the backend at --url is healthy",
+		Args:   cobra.NoArgs,
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c := http.Client{Timeout: 5 * time.Second}
+			resp, err := c.Get(url)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+				return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8080/healthz", "URL to check; /readyz also requires the database and broker")
+	return cmd
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), fullVersion())
+		},
+	}
+}
+
+// fullVersion is the version with the VCS revision it was built from.
+func fullVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	var rev, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value[:min(12, len(s.Value))]
+		case "vcs.modified":
+			if s.Value == "true" {
+				modified = "-dirty"
+			}
 		}
 	}
+	if rev == "" {
+		return version
+	}
+	return version + " (" + rev + modified + ")"
 }

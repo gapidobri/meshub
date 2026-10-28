@@ -30,7 +30,7 @@ TINYGOFLAGS += -port $(PORT)
 NODEFLAGS += -port $(PORT)
 endif
 
-.PHONY: all gateway flash monitor config node node-flash node-config test server broker broker-down broker-logs mqtt-sub clean
+.PHONY: all gateway flash monitor config node node-flash node-config test server openapi docker broker broker-down broker-logs mqtt-sub clean
 
 all: test gateway node
 
@@ -70,7 +70,16 @@ test:
 # Runs the backend against the local broker; the UI is on http://localhost:8080.
 server:
 	@mkdir -p $(BUILD)
-	go run ./server/cmd/meshub -db $(BUILD)/meshub.db
+	go run ./server/cmd/meshub serve --db $(BUILD)/meshub.db
+
+# Regenerates the API description from the code; a test fails until it is.
+openapi:
+	go run ./server/cmd/meshub openapi > docs/openapi.yaml
+
+VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
+
+docker:
+	docker build -t meshub:$(VERSION) --build-arg VERSION=$(VERSION) .
 
 broker:
 	docker compose up -d

@@ -1,0 +1,1052 @@
+components:
+  schemas:
+    AdvertBody:
+      additionalProperties: true
+      properties:
+        gateways:
+          description: How many gateways the advert was queued on
+          format: int64
+          type: integer
+      required:
+        - gateways
+      type: object
+    Command:
+      additionalProperties: true
+      properties:
+        args: {}
+        created_at:
+          format: date-time
+          type: string
+        device:
+          type: string
+        done_at:
+          format: date-time
+          type: string
+        id:
+          format: int32
+          minimum: 0
+          type: integer
+        name:
+          type: string
+        result:
+          description: What the device returned, once done
+        status:
+          enum:
+            - pending
+            - ok
+            - failed
+            - unknown
+            - cancelled
+          type: string
+      required:
+        - id
+        - device
+        - name
+        - args
+        - status
+        - created_at
+      type: object
+    CommandsBody:
+      additionalProperties: true
+      properties:
+        commands:
+          items:
+            $ref: "#/components/schemas/Command"
+          type:
+            - array
+            - "null"
+      required:
+        - commands
+      type: object
+    Config:
+      additionalProperties: true
+      properties:
+        config:
+          description: A JSON object
+        updated_at:
+          format: date-time
+          type: string
+        version:
+          description: 0 if none was ever set
+          format: int32
+          minimum: 0
+          type: integer
+      required:
+        - version
+        - config
+      type: object
+    Device:
+      additionalProperties: true
+      properties:
+        battery_mv:
+          description: Battery voltage at the last check-in, in millivolts
+          format: int64
+          type: integer
+        claim:
+          description: Claim code the device joined with, for matching it to its owner
+          type: string
+        config_error:
+          description: Why the device rejected RejectedVersion
+          type: string
+        config_version:
+          description: Config version the device has
+          format: int32
+          minimum: 0
+          type: integer
+        firmware:
+          type: string
+        joined_at:
+          format: date-time
+          type: string
+        last_hello_at:
+          description: Last check-in; absent before the first
+          format: date-time
+          type: string
+        program:
+          description: What the device runs, as reported when it joined
+          type: string
+        pubkey:
+          description: MeshCore public key, upper-case hex
+          type: string
+        rejected_version:
+          description: Last config version the device rejected; 0 if none
+          format: int32
+          minimum: 0
+          type: integer
+        status:
+          enum:
+            - pending
+            - paired
+            - rejected
+          type: string
+        uptime_s:
+          description: Uptime at the last check-in, in seconds
+          format: int32
+          minimum: 0
+          type: integer
+        wake_reason:
+          enum:
+            - unknown
+            - power_on
+            - timer
+            - pin
+            - other
+          type: string
+        want_version:
+          description: Config version the hub has for it; 0 if none
+          format: int32
+          minimum: 0
+          type: integer
+      required:
+        - pubkey
+        - status
+        - program
+        - firmware
+        - claim
+        - config_version
+        - want_version
+        - rejected_version
+        - config_error
+        - battery_mv
+        - wake_reason
+        - uptime_s
+        - joined_at
+      type: object
+    DevicesBody:
+      additionalProperties: true
+      properties:
+        devices:
+          items:
+            $ref: "#/components/schemas/Device"
+          type:
+            - array
+            - "null"
+      required:
+        - devices
+      type: object
+    Echo:
+      additionalProperties: true
+      properties:
+        at:
+          format: date-time
+          type: string
+        gateway:
+          type: string
+        hops:
+          format: int64
+          type: integer
+        snr:
+          format: int64
+          type: integer
+      required:
+        - gateway
+        - hops
+        - snr
+        - at
+      type: object
+    ErrorDetail:
+      additionalProperties: true
+      properties:
+        location:
+          description: Where the error occurred, e.g. 'body.items[3].tags' or 'path.thing-id'
+          type: string
+        message:
+          description: Error message text
+          type: string
+        value:
+          description: The value at the given location
+      type: object
+    ErrorModel:
+      additionalProperties: true
+      properties:
+        detail:
+          description: A human-readable explanation specific to this occurrence of the problem.
+          examples:
+            - Property foo is required but is missing.
+          type: string
+        errors:
+          description: Optional list of individual error details
+          items:
+            $ref: "#/components/schemas/ErrorDetail"
+          type:
+            - array
+            - "null"
+        instance:
+          description: A URI reference that identifies the specific occurrence of the problem.
+          examples:
+            - https://example.com/error-log/abc123
+          format: uri
+          type: string
+        status:
+          description: HTTP status code
+          examples:
+            - 400
+          format: int64
+          type: integer
+        title:
+          description: A short, human-readable summary of the problem type. This value should not change between occurrences of the error.
+          examples:
+            - Bad Request
+          type: string
+        type:
+          default: about:blank
+          description: A URI reference to human-readable documentation for the error.
+          examples:
+            - https://example.com/errors/example
+          format: uri
+          type: string
+      type: object
+    Event:
+      additionalProperties: true
+      properties:
+        data: {}
+        device:
+          description: The device's public key
+          type: string
+        device_time:
+          description: When it happened by the device's clock; absent if the device did not know
+          format: date-time
+          type: string
+        id:
+          description: Increases with every event the backend stores, across devices
+          format: int64
+          type: integer
+        kind:
+          type: string
+        program:
+          type: string
+        received_at:
+          format: date-time
+          type: string
+        seq:
+          description: The device's own event number
+          format: int32
+          minimum: 0
+          type: integer
+      required:
+        - id
+        - device
+        - program
+        - seq
+        - kind
+        - data
+        - received_at
+      type: object
+    EventsBody:
+      additionalProperties: true
+      properties:
+        events:
+          items:
+            $ref: "#/components/schemas/Event"
+          type:
+            - array
+            - "null"
+      required:
+        - events
+      type: object
+    Gateway:
+      additionalProperties: true
+      properties:
+        firmware:
+          type: string
+        first_seen:
+          format: date-time
+          type: string
+        iata:
+          type: string
+        last_status_at:
+          format: date-time
+          type: string
+        model:
+          type: string
+        name:
+          type: string
+        online:
+          description: Reported online recently enough to be trusted
+          type: boolean
+        pubkey:
+          type: string
+        radio:
+          type: string
+        stats: {}
+        status:
+          description: "As last reported: online or offline"
+          type: string
+      required:
+        - pubkey
+        - iata
+        - name
+        - status
+        - online
+        - model
+        - firmware
+        - radio
+        - stats
+        - first_seen
+        - last_status_at
+      type: object
+    GatewaysBody:
+      additionalProperties: true
+      properties:
+        gateways:
+          items:
+            $ref: "#/components/schemas/Gateway"
+          type:
+            - array
+            - "null"
+      required:
+        - gateways
+      type: object
+    Hub:
+      additionalProperties: true
+      properties:
+        last_advert:
+          format: date-time
+          type: string
+        last_echo:
+          $ref: "#/components/schemas/Echo"
+          description: The hub's own advert last heard back from the mesh
+        name:
+          type: string
+        pubkey:
+          description: Devices are built with this key
+          type: string
+        results:
+          description: Recent transmit results, newest first
+          items:
+            $ref: "#/components/schemas/TxResult"
+          type:
+            - array
+            - "null"
+      required:
+        - pubkey
+        - name
+        - results
+      type: object
+    Link:
+      additionalProperties: true
+      properties:
+        gateway:
+          type: string
+        heard_count:
+          format: int64
+          type: integer
+        hops:
+          format: int64
+          type: integer
+        last_heard_at:
+          format: date-time
+          type: string
+        rssi:
+          format: int64
+          type: integer
+        snr:
+          format: int64
+          type: integer
+      required:
+        - gateway
+        - snr
+        - rssi
+        - hops
+        - heard_count
+        - last_heard_at
+      type: object
+    Node:
+      additionalProperties: true
+      properties:
+        advert_time:
+          format: date-time
+          type: string
+        first_seen:
+          format: date-time
+          type: string
+        last_heard_at:
+          format: date-time
+          type: string
+        lat:
+          format: double
+          type: number
+        links:
+          description: Gateways that hear it, fewest hops first
+          items:
+            $ref: "#/components/schemas/Link"
+          type:
+            - array
+            - "null"
+        lon:
+          format: double
+          type: number
+        name:
+          type: string
+        pubkey:
+          type: string
+        type:
+          enum:
+            - unknown
+            - chat
+            - repeater
+            - room
+            - sensor
+          type: string
+      required:
+        - pubkey
+        - name
+        - type
+        - advert_time
+        - first_seen
+        - last_heard_at
+        - links
+      type: object
+    NodesBody:
+      additionalProperties: true
+      properties:
+        nodes:
+          items:
+            $ref: "#/components/schemas/Node"
+          type:
+            - array
+            - "null"
+      required:
+        - nodes
+      type: object
+    Queue-device-commandRequest:
+      additionalProperties: true
+      properties:
+        args:
+          description: Any JSON value; null if absent
+        name:
+          maxLength: 32
+          minLength: 1
+          type: string
+      required:
+        - name
+      type: object
+    TxResult:
+      additionalProperties: true
+      properties:
+        at:
+          format: date-time
+          type: string
+        gateway:
+          type: string
+        status:
+          type: string
+        what:
+          type: string
+      required:
+        - gateway
+        - what
+        - status
+        - at
+      type: object
+  securitySchemes:
+    bearer:
+      description: One of the backend's API tokens
+      scheme: bearer
+      type: http
+info:
+  description: Devices, their events, config and commands, and the mesh they are reached through. Device events and status are also published over MQTT; see package appproto.
+  title: meshub API
+  version: dev
+openapi: 3.1.0
+paths:
+  /api/v1/devices:
+    get:
+      operationId: list-devices
+      parameters:
+        - description: Only devices running this program
+          explode: false
+          in: query
+          name: program
+          schema:
+            description: Only devices running this program
+            type: string
+        - description: Only devices with this status
+          explode: false
+          in: query
+          name: status
+          schema:
+            description: Only devices with this status
+            enum:
+              - pending
+              - paired
+              - rejected
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DevicesBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: List devices
+      tags:
+        - Devices
+  /api/v1/devices/{pubkey}:
+    delete:
+      description: Its config, events and commands are deleted. If it asks to pair again, it is a new, pending device.
+      operationId: delete-device
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      responses:
+        "204":
+          description: No Content
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Forget a device
+      tags:
+        - Devices
+    get:
+      operationId: get-device
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Get a device
+      tags:
+        - Devices
+  /api/v1/devices/{pubkey}/approve:
+    post:
+      description: The device is paired the next time it asks, which a pending device does every minute.
+      operationId: approve-device
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Approve a device's pairing
+      tags:
+        - Devices
+  /api/v1/devices/{pubkey}/commands:
+    get:
+      operationId: list-device-commands
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+        - explode: false
+          in: query
+          name: limit
+          schema:
+            default: 100
+            format: int64
+            maximum: 1000
+            minimum: 1
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandsBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: List a device's commands, newest first
+      tags:
+        - Commands
+    post:
+      description: The device fetches it at its next check-in. Its result is published on the device's commands topic.
+      operationId: queue-device-command
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Queue-device-commandRequest"
+        required: true
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+          description: Created
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Queue a command for a device
+      tags:
+        - Commands
+  /api/v1/devices/{pubkey}/commands/{id}:
+    get:
+      operationId: get-device-command
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+        - in: path
+          name: id
+          required: true
+          schema:
+            format: int32
+            minimum: 0
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Get one of a device's commands
+      tags:
+        - Commands
+  /api/v1/devices/{pubkey}/commands/{id}/cancel:
+    post:
+      operationId: cancel-device-command
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+        - in: path
+          name: id
+          required: true
+          schema:
+            format: int32
+            minimum: 0
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Command"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Cancel a command the device has not fetched
+      tags:
+        - Commands
+  /api/v1/devices/{pubkey}/config:
+    get:
+      operationId: get-device-config
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Get the config the hub has for a device
+      tags:
+        - Config
+    put:
+      description: Stored as the next config version, which the device fetches at its next check-in. The device may reject it; its status then shows rejected_version and config_error.
+      operationId: set-device-config
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: {}
+              type: object
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Replace a device's config
+      tags:
+        - Config
+  /api/v1/devices/{pubkey}/events:
+    get:
+      operationId: list-device-events
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+        - description: "Only events with a higher ID: the last ID seen, to resume from it"
+          explode: false
+          in: query
+          name: after
+          schema:
+            description: "Only events with a higher ID: the last ID seen, to resume from it"
+            format: int64
+            minimum: 0
+            type: integer
+        - description: Only events with a lower ID, to page backwards
+          explode: false
+          in: query
+          name: before
+          schema:
+            description: Only events with a lower ID, to page backwards
+            format: int64
+            minimum: 0
+            type: integer
+        - description: By ID, oldest or newest first
+          explode: false
+          in: query
+          name: order
+          schema:
+            default: asc
+            description: By ID, oldest or newest first
+            enum:
+              - asc
+              - desc
+            type: string
+        - explode: false
+          in: query
+          name: limit
+          schema:
+            default: 100
+            format: int64
+            maximum: 1000
+            minimum: 1
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventsBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: List a device's events
+      tags:
+        - Events
+  /api/v1/devices/{pubkey}/reject:
+    post:
+      operationId: reject-device
+      parameters:
+        - description: The device's public key, hex
+          in: path
+          name: pubkey
+          required: true
+          schema:
+            description: The device's public key, hex
+            pattern: ^[0-9A-Fa-f]{64}$
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Reject a device's pairing
+      tags:
+        - Devices
+  /api/v1/events:
+    get:
+      operationId: list-events
+      parameters:
+        - description: "Only events with a higher ID: the last ID seen, to resume from it"
+          explode: false
+          in: query
+          name: after
+          schema:
+            description: "Only events with a higher ID: the last ID seen, to resume from it"
+            format: int64
+            minimum: 0
+            type: integer
+        - description: Only events with a lower ID, to page backwards
+          explode: false
+          in: query
+          name: before
+          schema:
+            description: Only events with a lower ID, to page backwards
+            format: int64
+            minimum: 0
+            type: integer
+        - description: By ID, oldest or newest first
+          explode: false
+          in: query
+          name: order
+          schema:
+            default: asc
+            description: By ID, oldest or newest first
+            enum:
+              - asc
+              - desc
+            type: string
+        - explode: false
+          in: query
+          name: limit
+          schema:
+            default: 100
+            format: int64
+            maximum: 1000
+            minimum: 1
+            type: integer
+        - description: Only events from devices running this program
+          explode: false
+          in: query
+          name: program
+          schema:
+            description: Only events from devices running this program
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventsBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: List events from all devices
+      tags:
+        - Events
+  /api/v1/gateways:
+    get:
+      operationId: list-gateways
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GatewaysBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: List gateways
+      tags:
+        - Mesh
+  /api/v1/hub:
+    get:
+      operationId: get-hub
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Hub"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Get the hub's identity and recent transmissions
+      tags:
+        - Hub
+  /api/v1/hub/advert:
+    post:
+      operationId: send-advert
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdvertBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: Flood the hub's advert from every online gateway
+      tags:
+        - Hub
+  /api/v1/nodes:
+    get:
+      operationId: list-nodes
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodesBody"
+          description: OK
+        default:
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ErrorModel"
+          description: Error
+      summary: List mesh nodes known from their adverts
+      tags:
+        - Mesh
+security:
+  - bearer: []

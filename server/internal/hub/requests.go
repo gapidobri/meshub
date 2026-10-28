@@ -1,10 +1,14 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -235,8 +239,28 @@ func (h *Hub) handle(ctx context.Context, req *request, route store.Route) (hubp
 	if fresh, err := h.st.AcceptSeq(ctx, req.device, req.seq); err != nil || !fresh {
 		return nil, err // a replay, or a copy already answered
 	}
+	if f, ok := req.msg.(*hubproto.Fragment); ok {
+		m, done, err := h.reassemble(req.device, f)
+		if err != nil {
+			h.log.Warn("device fragment", "device", short(req.device), "err", err)
+			return &hubproto.Error{Code: hubproto.ErrBadRequest}, nil
+		}
+		if !done {
+			return &hubproto.Ack{}, nil
+		}
+		switch m.(type) {
+		case *hubproto.Events, *hubproto.CommandResult:
+			return h.handleMessage(ctx, req, route, m)
+		}
+		return &hubproto.Error{Code: hubproto.ErrBadRequest}, nil
+	}
+	return h.handleMessage(ctx, req, route, req.msg)
+}
 
-	switch m := req.msg.(type) {
+// handleMessage applies a paired device's request, or the message its
+// fragments carried.
+func (h *Hub) handleMessage(ctx context.Context, req *request, route store.Route, msg hubproto.Message) (hubproto.Message, error) {
+	switch m := msg.(type) {
 	case *hubproto.Hello:
 		err := h.st.RecordHello(ctx, req.device, store.Hello{
 			ConfigVersion: m.ConfigVersion, WakeReason: m.WakeReason, BatteryMV: m.BatteryMV,
@@ -245,7 +269,12 @@ func (h *Hub) handle(ctx context.Context, req *request, route store.Route) (hubp
 		if err != nil {
 			return nil, err
 		}
+		h.Notify.DeviceChanged(req.device)
 		cfg, err := h.st.Config(ctx, req.device)
+		if err != nil {
+			return nil, err
+		}
+		commands, err := h.st.PendingCommands(ctx, req.device)
 		if err != nil {
 			return nil, err
 		}
@@ -256,6 +285,7 @@ func (h *Hub) handle(ctx context.Context, req *request, route store.Route) (hubp
 			ConfigVersion: cfg.Version,
 			ConfigLen:     uint16(len(cfg.CBOR)),
 			ConfigCRC:     hubproto.ConfigCRC(cfg.CBOR),
+			Commands:      uint8(min(commands, 255)),
 		}, nil
 
 	case *hubproto.ConfigGet:
@@ -272,16 +302,106 @@ func (h *Hub) handle(ctx context.Context, req *request, route store.Route) (hubp
 		end := min(int(m.Offset)+hubproto.ChunkSize, len(cfg.CBOR))
 		return &hubproto.ConfigChunk{ConfigVersion: cfg.Version, Offset: m.Offset, Data: cfg.CBOR[m.Offset:end]}, nil
 
-	case *hubproto.Event:
-		data, _ := json.Marshal(m.Data.Any())
-		err := h.st.AddEvent(ctx, req.device, store.Event{Seq: m.EventSeq, Kind: m.Kind, Data: string(data), ReceivedAt: h.now()})
+	case *hubproto.ConfigStatus:
+		rejected := m.Status == hubproto.ConfigRejected
+		if err := h.st.RecordConfigStatus(ctx, req.device, m.ConfigVersion, rejected, m.Reason); err != nil {
+			return nil, err
+		}
+		h.Notify.DeviceChanged(req.device)
+		if rejected {
+			h.log.Warn("device rejected config", "device", short(req.device), "version", m.ConfigVersion, "reason", m.Reason)
+		}
+		return &hubproto.Ack{}, nil
+
+	case *hubproto.Events:
+		for _, e := range m.Events {
+			data, _ := json.Marshal(e.Data.Any())
+			ev := store.Event{Seq: e.Seq, Kind: e.Kind, Data: string(data), ReceivedAt: h.now()}
+			if e.Time != 0 {
+				ev.DeviceTime = time.Unix(int64(e.Time), 0)
+			}
+			if err := h.st.AddEvent(ctx, req.device, ev); err != nil {
+				return nil, err
+			}
+			h.log.Info("device event", "device", short(req.device), "kind", e.Kind, "data", string(data))
+		}
+		h.Notify.EventsAdded()
+		return &hubproto.Ack{}, nil
+
+	case *hubproto.CommandGet:
+		c, ok, err := h.st.NextCommand(ctx, req.device)
+		if err != nil || !ok {
+			return &hubproto.Command{Args: hubproto.Null()}, err
+		}
+		args, _, err := hubproto.DecodeCBOR(c.ArgsCBOR)
 		if err != nil {
 			return nil, err
 		}
-		h.log.Info("device event", "device", short(req.device), "kind", m.Kind, "data", string(data))
-		return &hubproto.EventAck{EventSeq: m.EventSeq}, nil
+		return &hubproto.Command{ID: c.ID, Name: c.Name, Args: args}, nil
+
+	case *hubproto.CommandResult:
+		status := store.CommandOK
+		switch m.Status {
+		case hubproto.CommandFailed:
+			status = store.CommandFailed
+		case hubproto.CommandUnknown:
+			status = store.CommandUnknown
+		}
+		result, _ := json.Marshal(m.Result.Any())
+		if err := h.st.FinishCommand(ctx, req.device, m.ID, status, string(result), h.now()); err != nil {
+			return nil, err
+		}
+		h.Notify.CommandChanged(req.device, m.ID)
+		h.log.Info("device command done", "device", short(req.device), "id", m.ID, "status", status)
+		return &hubproto.Ack{}, nil
 	}
 	return &hubproto.Error{Code: hubproto.ErrBadRequest}, nil
+}
+
+// assemblyTTL is how long a partly received large message is kept.
+const assemblyTTL = 10 * time.Minute
+
+// assembly is a large message arriving in fragments.
+type assembly struct {
+	xfer  uint16
+	total uint16
+	buf   []byte
+	at    time.Time
+}
+
+var errFragment = errors.New("hub: fragment out of order")
+
+// reassemble adds a fragment to the device's large message, returning the
+// message once it is complete. A fragment resent after a lost reply
+// replaces what it carried, and a resent last fragment completes the
+// message again: the messages that travel in fragments are idempotent.
+func (h *Hub) reassemble(device string, f *hubproto.Fragment) (hubproto.Message, bool, error) {
+	now := h.now()
+	h.asmMu.Lock()
+	defer h.asmMu.Unlock()
+	for d, a := range h.asm {
+		if now.Sub(a.at) > assemblyTTL {
+			delete(h.asm, d)
+		}
+	}
+	a := h.asm[device]
+	if a == nil || a.xfer != f.Xfer || a.total != f.Total {
+		if f.Offset != 0 {
+			return nil, false, errFragment
+		}
+		a = &assembly{xfer: f.Xfer, total: f.Total}
+		h.asm[device] = a
+	}
+	if f.Total > hubproto.MaxMessage || int(f.Offset) > len(a.buf) || int(f.Offset)+len(f.Data) > int(f.Total) {
+		return nil, false, errFragment
+	}
+	a.buf = append(a.buf[:f.Offset], f.Data...)
+	a.at = now
+	if len(a.buf) < int(a.total) {
+		return nil, false, nil
+	}
+	m, err := hubproto.DecodeMessage(a.buf)
+	return m, err == nil, err
 }
 
 func (h *Hub) handleJoin(ctx context.Context, req *request, j *hubproto.Join) (hubproto.Message, error) {
@@ -289,10 +409,18 @@ func (h *Hub) handleJoin(ctx context.Context, req *request, j *hubproto.Join) (h
 	if h.AutoPair {
 		status = store.DevicePaired
 	}
+	prev, known, err := h.st.Device(ctx, req.device)
+	if err != nil {
+		return nil, err
+	}
 	dev, err := h.st.Join(ctx, req.device, j.Program, j.Firmware, j.Claim, status, req.seq, h.now())
 	if err != nil {
 		return nil, err
 	}
+	if known && prev.Program != dev.Program {
+		h.Notify.DeviceDeleted(prev) // its status moves to the new program's topic
+	}
+	h.Notify.DeviceChanged(req.device)
 	switch dev.Status {
 	case store.DevicePaired:
 		return &hubproto.JoinReply{Status: hubproto.JoinAccepted}, nil
@@ -349,16 +477,26 @@ func typeName(t hubproto.Type) string {
 		return "hello"
 	case hubproto.TypeConfigGet:
 		return "config-get"
-	case hubproto.TypeEvent:
-		return "event"
+	case hubproto.TypeEvents:
+		return "events"
+	case hubproto.TypeConfigStatus:
+		return "config-status"
+	case hubproto.TypeCommandGet:
+		return "command-get"
+	case hubproto.TypeCommandResult:
+		return "command-result"
+	case hubproto.TypeFragment:
+		return "fragment"
 	case hubproto.TypeJoinReply:
 		return "join-reply"
 	case hubproto.TypeHelloReply:
 		return "hello-reply"
 	case hubproto.TypeConfigChunk:
 		return "config-chunk"
-	case hubproto.TypeEventAck:
-		return "event-ack"
+	case hubproto.TypeAck:
+		return "ack"
+	case hubproto.TypeCommand:
+		return "command"
 	case hubproto.TypeError:
 		return "error"
 	}
@@ -370,20 +508,118 @@ func typeName(t hubproto.Type) string {
 func (h *Hub) SetConfig(ctx context.Context, device string, jsonConfig []byte) (uint32, error) {
 	var x any
 	if err := json.Unmarshal(jsonConfig, &x); err != nil {
-		return 0, err
+		return 0, invalid(err)
 	}
 	v, ok := hubproto.FromAny(x)
 	if !ok || v.Kind() != hubproto.KindMap {
-		return 0, errors.New("config must be a JSON object")
+		return 0, invalid(errors.New("config must be a JSON object"))
 	}
 	cbor := v.AppendCBOR(nil)
 	if len(cbor) > 0xFFFF {
-		return 0, errors.New("config too large")
+		return 0, invalid(errors.New("config too large"))
+	}
+	if err := h.known(ctx, device); err != nil {
+		return 0, err
 	}
 	pretty, _ := json.MarshalIndent(v.Any(), "", "  ")
 	version, err := h.st.SetConfig(ctx, device, cbor, string(pretty), h.now())
 	if err == nil {
 		h.log.Info("device config set", "device", short(device), "version", version, "bytes", len(cbor))
+		h.Notify.DeviceChanged(device)
 	}
 	return version, err
+}
+
+// maxCommandName bounds a command's name.
+const maxCommandName = 32
+
+// QueueCommand validates a command, with its arguments as JSON (empty for
+// none), and queues it for the device, which fetches it at its next
+// check-in. It returns the command's ID.
+func (h *Hub) QueueCommand(ctx context.Context, device, name string, jsonArgs []byte) (uint32, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > maxCommandName {
+		return 0, invalid(fmt.Errorf("command name must be 1 to %d characters", maxCommandName))
+	}
+	if err := h.known(ctx, device); err != nil {
+		return 0, err
+	}
+	args := hubproto.Null()
+	if len(bytes.TrimSpace(jsonArgs)) > 0 {
+		var x any
+		if err := json.Unmarshal(jsonArgs, &x); err != nil {
+			return 0, invalid(fmt.Errorf("arguments: %w", err))
+		}
+		var ok bool
+		if args, ok = hubproto.FromAny(x); !ok {
+			return 0, invalid(errors.New("arguments must be plain JSON"))
+		}
+	}
+	if _, err := hubproto.Encode(nil, 0, &hubproto.Command{ID: math.MaxUint32, Name: name, Args: args}, hubproto.MaxPlaintext); err != nil {
+		return 0, invalid(errors.New("command too large for a datagram"))
+	}
+	argsJSON, _ := json.Marshal(args.Any())
+	id, err := h.st.AddCommand(ctx, device, name, string(argsJSON), args.AppendCBOR(nil), h.now())
+	if err == nil {
+		h.log.Info("device command queued", "device", short(device), "id", id, "name", name)
+		h.Notify.CommandChanged(device, id)
+	}
+	return id, err
+}
+
+// CancelCommand cancels a command the device has not run yet.
+func (h *Hub) CancelCommand(ctx context.Context, device string, id uint32) error {
+	ok, err := h.st.CancelCommand(ctx, device, id, h.now())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotPending
+	}
+	h.Notify.CommandChanged(device, id)
+	return nil
+}
+
+// SetDeviceStatus approves (paired) or rejects a device. It takes effect
+// the next time the device asks to pair.
+func (h *Hub) SetDeviceStatus(ctx context.Context, device, status string) error {
+	if status != store.DevicePaired && status != store.DeviceRejected {
+		return invalid(fmt.Errorf("status must be %s or %s", store.DevicePaired, store.DeviceRejected))
+	}
+	if err := h.known(ctx, device); err != nil {
+		return err
+	}
+	if err := h.st.SetDeviceStatus(ctx, device, status); err != nil {
+		return err
+	}
+	h.log.Info("device status set", "device", short(device), "status", status)
+	h.Notify.DeviceChanged(device)
+	return nil
+}
+
+// DeleteDevice forgets a device with its config, events and commands. If
+// it asks to pair again, it is a new, pending device.
+func (h *Hub) DeleteDevice(ctx context.Context, device string) error {
+	d, ok, err := h.st.Device(ctx, device)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrUnknownDevice
+	}
+	if err := h.st.DeleteDevice(ctx, device); err != nil {
+		return err
+	}
+	h.log.Info("device deleted", "device", short(device))
+	h.Notify.DeviceDeleted(d)
+	return nil
+}
+
+// known returns ErrUnknownDevice for a device the hub does not know.
+func (h *Hub) known(ctx context.Context, device string) error {
+	_, ok, err := h.st.Device(ctx, device)
+	if err == nil && !ok {
+		err = ErrUnknownDevice
+	}
+	return err
 }

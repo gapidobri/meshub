@@ -88,8 +88,9 @@ type Gateway struct {
 	pending   []pendingTx
 	nextStats time.Time
 
-	statsMu sync.Mutex
-	stats   gwproto.Stats
+	statsMu  sync.Mutex
+	stats    gwproto.Stats
+	activity Activity
 
 	uplinkDropped atomic.Uint32
 	reconnects    atomic.Uint32
@@ -141,6 +142,17 @@ type pendingTx struct {
 	deadline time.Time
 }
 
+// Activity counts the packets the gateway has received and sent since it
+// started.
+type Activity struct {
+	RxPackets uint32
+	TxPackets uint32
+	// LastRx is when the last packet was received; zero before the first.
+	LastRx   time.Time
+	LastRSSI float32
+	LastSNR  float32
+}
+
 // New creates a Gateway and the Mesh it drives. mc.Handler is ignored; the
 // Gateway is the handler. poolSize must match the size of mc.Packets.
 func New(cfg Config, mc meshcore.Config, poolSize int) *Gateway {
@@ -177,6 +189,25 @@ func (g *Gateway) Mesh() *meshcore.Mesh { return g.mesh }
 
 // Connected reports whether the gateway currently has a broker session.
 func (g *Gateway) Connected() bool { return g.connected.Load() }
+
+// Stats returns the radio and uplink statistics the status publishes,
+// refreshed every second.
+func (g *Gateway) Stats() gwproto.Stats {
+	g.statsMu.Lock()
+	st := g.stats
+	g.statsMu.Unlock()
+	st.UplinkDropped = g.uplinkDropped.Load()
+	st.MQTTReconnects = g.reconnects.Load()
+	return st
+}
+
+// Activity returns the packet counters. It is safe to call from any
+// goroutine.
+func (g *Gateway) Activity() Activity {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	return g.activity
+}
 
 // Begin starts the radio.
 func (g *Gateway) Begin() { g.mesh.Begin() }
@@ -232,6 +263,12 @@ func (g *Gateway) LogRxRaw(snr, rssi float32, raw []byte) {
 	ev.score = int16(g.mesh.Radio().PacketScore(snr, len(raw)) * 1000)
 	ev.airtimeMs = g.mesh.Radio().EstAirtimeFor(len(raw))
 	g.queueUplink(ev)
+
+	g.statsMu.Lock()
+	a := &g.activity
+	a.RxPackets++
+	a.LastRx, a.LastRSSI, a.LastSNR = ev.t, rssi, snr
+	g.statsMu.Unlock()
 }
 
 func (g *Gateway) LogTx(p *meshcore.Packet, length int) {
@@ -242,6 +279,10 @@ func (g *Gateway) LogTx(p *meshcore.Packet, length int) {
 	ev.snr, ev.rssi, ev.score, ev.airtimeMs = 0, 0, 0, 0
 	g.queueUplink(ev)
 	g.resolvePending(p, gwproto.TxSent)
+
+	g.statsMu.Lock()
+	g.activity.TxPackets++
+	g.statsMu.Unlock()
 }
 
 func (g *Gateway) LogTxFail(p *meshcore.Packet, length int) {

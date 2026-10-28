@@ -195,12 +195,7 @@ func (g *Gateway) fillStatus(s *gwproto.Status) {
 }
 
 func (g *Gateway) publishStatus(c *mqtt.Client) error {
-	g.statsMu.Lock()
-	st := g.stats
-	g.statsMu.Unlock()
-	st.UplinkDropped = g.uplinkDropped.Load()
-	st.MQTTReconnects = g.reconnects.Load()
-
+	st := g.Stats()
 	s := gwproto.Status{Status: gwproto.StatusOnline, Stats: &st}
 	g.fillStatus(&s)
 	g.txBuf = s.AppendJSON(g.txBuf[:0], time.Now())

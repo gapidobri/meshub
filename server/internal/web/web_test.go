@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -29,6 +30,26 @@ func (f *fakeHub) SendAdvert(context.Context) (int, error) { f.adverts++; return
 
 func (f *fakeHub) SetConfig(ctx context.Context, device string, cfg []byte) (uint32, error) {
 	return f.st.SetConfig(ctx, device, []byte{0xA0}, string(cfg), time.Now())
+}
+
+func (f *fakeHub) QueueCommand(ctx context.Context, device, name string, args []byte) (uint32, error) {
+	if len(args) == 0 {
+		args = []byte("null")
+	}
+	return f.st.AddCommand(ctx, device, name, string(args), []byte{0xF6}, time.Now())
+}
+
+func (f *fakeHub) CancelCommand(ctx context.Context, device string, id uint32) error {
+	_, err := f.st.CancelCommand(ctx, device, id, time.Now())
+	return err
+}
+
+func (f *fakeHub) SetDeviceStatus(ctx context.Context, device, status string) error {
+	return f.st.SetDeviceStatus(ctx, device, status)
+}
+
+func (f *fakeHub) DeleteDevice(ctx context.Context, device string) error {
+	return f.st.DeleteDevice(ctx, device)
 }
 
 func TestPages(t *testing.T) {
@@ -72,12 +93,6 @@ func TestPages(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}
-	}
-	if body := get("/api/nodes"); !strings.Contains(body, `"name":"hydrant"`) || !strings.Contains(body, `"hops":1`) {
-		t.Errorf("/api/nodes = %s", body)
-	}
-	if body := get("/api/gateways"); !strings.Contains(body, `"iata":"LJU"`) {
-		t.Errorf("/api/gateways = %s", body)
 	}
 
 	rec := httptest.NewRecorder()
@@ -140,6 +155,29 @@ func TestDevicePages(t *testing.T) {
 		!strings.Contains(page.Body.String(), "v1 waiting for the device") || !strings.Contains(page.Body.String(), "No events yet") {
 		t.Errorf("device page = %d", page.Code)
 	}
+
+	// Commands: queue two, cancel one, finish the other with a log text.
+	if rec := do("POST", "/devices/"+pk+"/commands", url.Values{"name": {"logs"}}); rec.Code != http.StatusSeeOther ||
+		!strings.Contains(rec.Header().Get("Location"), "queued") {
+		t.Errorf("queue command = %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	do("POST", "/devices/"+pk+"/commands", url.Values{"name": {"read"}, "args": {`{"n":3}`}})
+	cmds, _ := st.Commands(ctx, pk, 10)
+	if len(cmds) != 2 {
+		t.Fatalf("commands = %+v", cmds)
+	}
+	if rec := do("POST", fmt.Sprintf("/devices/%s/commands/%d/cancel", pk, cmds[0].ID), url.Values{}); rec.Code != http.StatusSeeOther {
+		t.Errorf("cancel = %d", rec.Code)
+	}
+	st.FinishCommand(ctx, pk, cmds[1].ID, store.CommandOK, `"+3s booted\n+5s config v1 applied\n"`, time.Now())
+	st.RecordConfigStatus(ctx, pk, 1, true, "interval_s must be positive")
+	body := do("GET", "/devices/"+pk, nil).Body.String()
+	for _, want := range []string{"cancelled", "5s config v1 applied", "v1 rejected by the device: interval_s must be positive"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("device page lacks %q", want)
+		}
+	}
+
 	if rec := do("GET", "/devices/FFFF", nil); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown device = %d", rec.Code)
 	}
