@@ -41,7 +41,7 @@ type Config struct {
 	// Hub is the hub's public key, from the backend's web UI.
 	Hub meshcore.Identity
 
-	Program  string // what this node runs, e.g. "hydrant"
+	Program  string // what this node runs, e.g. "weather"
 	Firmware string
 	Claim    string // optional code printed on the device
 

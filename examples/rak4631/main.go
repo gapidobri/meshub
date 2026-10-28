@@ -1,7 +1,7 @@
 //go:build tinygo
 
 // Command rak4631 is an example meshub node for the RAK4631 (nRF52840 +
-// SX1262), and a starting point for real ones such as the hydrant monitor.
+// SX1262), and a starting point for real ones.
 //
 // It pairs with the hub, checks in on an interval set by the hub's config,
 // and reports an event when its wake pin goes high (a comparator output,

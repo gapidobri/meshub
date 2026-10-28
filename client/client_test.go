@@ -17,7 +17,7 @@ func TestEventsAfterPages(t *testing.T) {
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if r.URL.Path != "/api/v1/events" || r.URL.Query().Get("program") != "hydrant" || r.Header.Get("Authorization") != "Bearer t" {
+		if r.URL.Path != "/api/v1/events" || r.URL.Query().Get("program") != "weather" || r.Header.Get("Authorization") != "Bearer t" {
 			http.Error(w, "unexpected request "+r.URL.String(), http.StatusBadRequest)
 			return
 		}
@@ -36,7 +36,7 @@ func TestEventsAfterPages(t *testing.T) {
 	c := New(srv.URL+"/", WithToken("t"))
 	var n int
 	var last int64
-	for e, err := range c.EventsAfter(context.Background(), "hydrant", 10) {
+	for e, err := range c.EventsAfter(context.Background(), "weather", 10) {
 		if err != nil {
 			t.Fatal(err)
 		}

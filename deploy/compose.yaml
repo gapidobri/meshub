@@ -1,0 +1,40 @@
+# meshub in production: the broker and the backend. See README.md here.
+#
+#   cp .env.example .env    # and fill it in
+#   docker compose up -d
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22
+    restart: unless-stopped
+    ports:
+      - "1883:1883" # gateways; keep it off the internet
+      #- "8883:8883" # applications, over TLS
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/acl:/mosquitto/config/acl:ro
+      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      #- ./certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+
+  meshub:
+    image: ghcr.io/gapidobri/meshub:${MESHUB_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    ports:
+      - "8080:8080" # web UI and API; put a TLS reverse proxy in front if it leaves the host
+    env_file: .env
+    environment:
+      MESHUB_MQTT_BROKER: tcp://mosquitto:1883
+      MESHUB_MQTT_USERNAME: meshub
+      MESHUB_MQTT_CLIENT_ID: meshub-server
+      MESHUB_LOG_FORMAT: json
+    volumes:
+      - meshub-data:/data # the database, with the hub's private key: back it up
+      - ./backups:/backups # where meshub backup writes copies
+    stop_grace_period: 15s # answers the devices already heard before exiting
+
+volumes:
+  mosquitto-data:
+  meshub-data:

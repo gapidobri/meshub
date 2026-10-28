@@ -15,7 +15,7 @@ func sampleConfig() Value {
 	audio.Set("gain", Float(1.5))
 	audio.Set("bands", List(Int(200), Int(2000)))
 	cfg := Map()
-	cfg.Set("name", String("hydrant 7"))
+	cfg.Set("name", String("weather 7"))
 	cfg.Set("audio", audio)
 	cfg.Set("enabled", Bool(true))
 	cfg.Set("note", Null())
@@ -158,7 +158,7 @@ func TestMessagesRoundTrip(t *testing.T) {
 	data := Map()
 	data.Set("duration_s", Int(93))
 	msgs := []Message{
-		&Join{Program: "hydrant", Firmware: "1.0", Claim: "AB12"},
+		&Join{Program: "weather", Firmware: "1.0", Claim: "AB12"},
 		&Hello{ConfigVersion: 5, WakeReason: WakePin, BatteryMV: 3700, UptimeS: 12, Firmware: "1.0"},
 		&ConfigGet{ConfigVersion: 5, Offset: 128},
 		&Events{Events: []Event{{Seq: 17, Time: 1_800_000_000, Kind: "flow", Data: data}, {Seq: 18, Kind: "pin", Data: Null()}}},

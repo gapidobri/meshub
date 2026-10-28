@@ -97,7 +97,7 @@ type Message interface {
 }
 
 type Join struct {
-	Program  string // what the node runs, e.g. "hydrant"
+	Program  string // what the node runs, e.g. "weather"
 	Firmware string
 	Claim    string // optional code printed on the device
 }

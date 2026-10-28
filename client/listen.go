@@ -68,8 +68,17 @@ func (c *Client) Listen(ctx context.Context, s Subscription) error {
 	if log == nil {
 		log = slog.Default()
 	}
-	msgs := make(chan mqtt.Message, 256)
-	connected := make(chan struct{}, 1)
+	// Connects are marked in the same channel as the messages, so that
+	// Listen sees each one before any message of the subscription it makes.
+	msgs := make(chan message, 256)
+	send := func(m message) bool {
+		select {
+		case msgs <- m:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
 	filter := appproto.DevicesFilter(s.Program)
 
 	opts := mqtt.NewClientOptions().
@@ -83,20 +92,17 @@ func (c *Client) Listen(ctx context.Context, s Subscription) error {
 		SetConnectRetryInterval(5 * time.Second).
 		SetMaxReconnectInterval(time.Minute).
 		SetOnConnectHandler(func(mc mqtt.Client) {
+			if !send(message{mark: markConnected}) {
+				return
+			}
 			t := mc.Subscribe(filter, 1, func(_ mqtt.Client, m mqtt.Message) {
-				select {
-				case msgs <- m:
-				case <-ctx.Done():
-				}
+				send(message{topic: m.Topic(), payload: m.Payload()})
 			})
 			if t.Wait() && t.Error() != nil {
 				log.Error("meshub: subscribe", "filter", filter, "err", t.Error())
 				return
 			}
-			select {
-			case connected <- struct{}{}:
-			default:
-			}
+			send(message{mark: markSubscribed})
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 			log.Warn("meshub: mqtt connection lost", "err", err)
@@ -129,19 +135,41 @@ func (c *Client) Listen(ctx context.Context, s Subscription) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-connected:
-			l.synced = false
-			err = catchUp()
 		case <-retry:
 			err = catchUp()
 		case m := <-msgs:
-			err = l.handle(ctx, m.Topic(), m.Payload())
+			switch m.mark {
+			case markConnected:
+				// Events published from now until the backfill are
+				// fetched by it.
+				l.synced = false
+				retry = nil
+			case markSubscribed:
+				err = catchUp()
+			default:
+				err = l.handle(ctx, m.topic, m.payload)
+			}
 		}
 		if err != nil {
 			return err
 		}
 	}
 }
+
+// message is a message from the broker, or a mark of a connect.
+type message struct {
+	mark    mark
+	topic   string
+	payload []byte
+}
+
+type mark int
+
+const (
+	markNone       mark = iota
+	markConnected       // connected, before subscribing
+	markSubscribed      // subscribed: events published from now on arrive
+)
 
 type listener struct {
 	c   *Client

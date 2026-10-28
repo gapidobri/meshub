@@ -90,13 +90,13 @@ func TestAuth(t *testing.T) {
 func TestDevices(t *testing.T) {
 	c, st := setup(t)
 	ctx := context.Background()
-	if _, err := st.Join(ctx, pk, "hydrant", "1.0", "XY12", store.DevicePending, 0, time.Now()); err != nil {
+	if _, err := st.Join(ctx, pk, "weather", "1.0", "XY12", store.DevicePending, 0, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
 	var list struct{ Devices []appproto.Device }
-	if c.do("GET", "/api/v1/devices?program=hydrant&status=pending", "", &list); len(list.Devices) != 1 || list.Devices[0].Claim != "XY12" {
-		t.Errorf("pending hydrants = %+v", list.Devices)
+	if c.do("GET", "/api/v1/devices?program=weather&status=pending", "", &list); len(list.Devices) != 1 || list.Devices[0].Claim != "XY12" {
+		t.Errorf("pending weathers = %+v", list.Devices)
 	}
 	if c.do("GET", "/api/v1/devices?program=meter", "", &list); len(list.Devices) != 0 {
 		t.Errorf("meters = %+v", list.Devices)
@@ -159,7 +159,7 @@ func TestDevices(t *testing.T) {
 	}
 	var events struct{ Events []appproto.Event }
 	if c.do("GET", "/api/v1/events?after=1&limit=1", "", &events); len(events.Events) != 1 || string(events.Events[0].Data) != "2" ||
-		events.Events[0].Program != "hydrant" {
+		events.Events[0].Program != "weather" {
 		t.Errorf("events after 1 = %+v", events.Events)
 	}
 	if c.do("GET", "/api/v1/devices/"+pk+"/events?order=desc", "", &events); len(events.Events) != 3 || events.Events[0].ID != 3 {

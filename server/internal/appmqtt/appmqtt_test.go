@@ -62,7 +62,7 @@ func setup(t *testing.T) (*App, *fakePub, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	if _, err := st.Join(context.Background(), pk, "hydrant/v2", "1", "", store.DevicePaired, 0, time.Now()); err != nil {
+	if _, err := st.Join(context.Background(), pk, "weather/v2", "1", "", store.DevicePaired, 0, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	pub := &fakePub{connected: true, failAfter: -1}
@@ -94,11 +94,11 @@ func TestEvents(t *testing.T) {
 		t.Fatalf("publish with broker failing = %d, %v; want cursor 4 and an error", cursor, err)
 	}
 	msgs := pub.take()
-	if len(msgs) != 2 || msgs[0].topic != "meshub/app/v1/hydrant_v2/devices/"+pk+"/events" || msgs[0].qos != 1 || msgs[0].retain {
+	if len(msgs) != 2 || msgs[0].topic != "meshub/app/v1/weather_v2/devices/"+pk+"/events" || msgs[0].qos != 1 || msgs[0].retain {
 		t.Fatalf("messages = %+v", msgs)
 	}
 	var e appproto.Event
-	if err := json.Unmarshal([]byte(msgs[0].payload), &e); err != nil || e.ID != 3 || e.Seq != 3 || string(e.Data) != `{"flow":true}` || e.Program != "hydrant/v2" {
+	if err := json.Unmarshal([]byte(msgs[0].payload), &e); err != nil || e.ID != 3 || e.Seq != 3 || string(e.Data) != `{"flow":true}` || e.Program != "weather/v2" {
 		t.Errorf("event = %+v, %v", e, err)
 	}
 
@@ -142,7 +142,7 @@ func TestRun(t *testing.T) {
 func TestStatus(t *testing.T) {
 	a, pub, st := setup(t)
 	ctx := context.Background()
-	topic := "meshub/app/v1/hydrant_v2/devices/" + pk + "/status"
+	topic := "meshub/app/v1/weather_v2/devices/" + pk + "/status"
 
 	if err := a.apply(ctx, update{kind: updateStatus, device: pk}); err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestCommand(t *testing.T) {
 	}
 	msgs := pub.take()
 	var c appproto.Command
-	if len(msgs) != 1 || msgs[0].topic != "meshub/app/v1/hydrant_v2/devices/"+pk+"/commands" ||
+	if len(msgs) != 1 || msgs[0].topic != "meshub/app/v1/weather_v2/devices/"+pk+"/commands" ||
 		json.Unmarshal([]byte(msgs[0].payload), &c) != nil || c.Status != appproto.CommandOK || string(c.Result) != `{"battery_mv":3700}` {
 		t.Errorf("command = %+v", msgs)
 	}

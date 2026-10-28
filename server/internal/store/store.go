@@ -96,6 +96,13 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Backup writes a consistent copy of the database to path, which must not
+// exist. It is safe while the backend runs.
+func (s *Store) Backup(ctx context.Context, path string) error {
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path)
+	return err
+}
+
 // Ping checks that the database is usable.
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 

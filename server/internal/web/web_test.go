@@ -83,13 +83,13 @@ func TestPages(t *testing.T) {
 		Stats: `{"uptime_secs":90000}`, LastStatusAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.AddAdvert(ctx, store.Advert{PubKey: "CCCC", Name: "hydrant", Type: 4, HasLoc: true, Lat: 46.05, Lon: 14.5,
+	if err := st.AddAdvert(ctx, store.Advert{PubKey: "CCCC", Name: "weather", Type: 4, HasLoc: true, Lat: 46.05, Lon: 14.5,
 		AdvertTime: 1, Gateway: gw, SNR: 7, RSSI: -90, Hops: 1, HeardAt: now}); err != nil {
 		t.Fatal(err)
 	}
 
 	body := get("/")
-	for _, want := range []string{"roof &lt;gw&gt;", "online", "1d 1h", "hydrant", "sensor", "46.05000, 14.50000"} {
+	for _, want := range []string{"roof &lt;gw&gt;", "online", "1d 1h", "weather", "sensor", "46.05000, 14.50000"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page lacks %q", want)
 		}
@@ -114,7 +114,7 @@ func TestDevicePages(t *testing.T) {
 	h := Handler(st, &fakeHub{st: st}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx := context.Background()
 	pk := "ABCD000000000000000000000000000000000000000000000000000000000000"
-	if _, err := st.Join(ctx, pk, "hydrant", "0.1", "XY12", store.DevicePending, 0, time.Now()); err != nil {
+	if _, err := st.Join(ctx, pk, "weather", "0.1", "XY12", store.DevicePending, 0, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,7 +133,7 @@ func TestDevicePages(t *testing.T) {
 		return rec
 	}
 
-	if body := do("GET", "/", nil).Body.String(); !strings.Contains(body, "Approve") || !strings.Contains(body, "hydrant") {
+	if body := do("GET", "/", nil).Body.String(); !strings.Contains(body, "Approve") || !strings.Contains(body, "weather") {
 		t.Error("pending device not listed with an Approve button")
 	}
 	if rec := do("POST", "/devices/"+pk+"/status", url.Values{"status": {"paired"}}); rec.Code != http.StatusSeeOther {

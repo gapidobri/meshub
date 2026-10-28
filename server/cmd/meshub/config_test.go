@@ -41,7 +41,7 @@ db:
 http:
   addr: ":9000"
 hub:
-  name: hydrants
+  name: weathers
   advert_interval: 6h
 mqtt:
   broker: tcp://broker:1883
@@ -56,7 +56,7 @@ api:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.DB.Path != "/var/lib/meshub/meshub.db" || c.Hub.Name != "hydrants" || c.Hub.AdvertInterval != 6*time.Hour {
+	if c.DB.Path != "/var/lib/meshub/meshub.db" || c.Hub.Name != "weathers" || c.Hub.AdvertInterval != 6*time.Hour {
 		t.Errorf("from file: %+v", c)
 	}
 	if c.MQTT.Password != "secret" || c.Retention.Events != 720*time.Hour {
@@ -104,5 +104,37 @@ func TestOpenAPIUpToDate(t *testing.T) {
 	}
 	if got.String() != string(want) {
 		t.Error("docs/openapi.yaml is out of date: run make openapi")
+	}
+}
+
+func TestBackup(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "meshub.db")
+	run := func(args ...string) (string, error) {
+		var out strings.Builder
+		cmd := rootCmd()
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		return out.String(), err
+	}
+	if _, err := run("backup", "--db", db); err == nil {
+		t.Error("backup of a missing database succeeded")
+	}
+	id, err := run("identity", "--db", db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "copy.db")
+	out, err := run("backup", "--db", db, dest)
+	if err != nil || !strings.Contains(out, "hub "+strings.TrimSpace(id)) {
+		t.Errorf("backup = %q, %v; want hub %s", out, err, id)
+	}
+	if _, err := run("backup", "--db", db, dest); err == nil {
+		t.Error("backup over an existing file succeeded")
+	}
+	if restored, _ := run("identity", "--db", dest); restored != id {
+		t.Errorf("identity of the copy = %q, want %q", restored, id)
 	}
 }

@@ -132,11 +132,11 @@ func TestAdvertsFromSeveralGateways(t *testing.T) {
 	in, st := newIngester(t)
 	ctx := context.Background()
 	n := newNode(3)
-	raw := n.advert(t, meshcore.NewAdvertDataLatLon(meshcore.AdvTypeSensor, "hydrant 1", 46.05, 14.5), 1_800_000_000, 2)
+	raw := n.advert(t, meshcore.NewAdvertDataLatLon(meshcore.AdvTypeSensor, "weather 1", 46.05, 14.5), 1_800_000_000, 2)
 
 	// The same advert heard by two gateways, B over fewer hops.
 	in.Handle(ctx, "meshcore/LJU/"+gwA+"/packets", packetMsg(raw, 3, -110))
-	rawB := n.advert(t, meshcore.NewAdvertDataLatLon(meshcore.AdvTypeSensor, "hydrant 1", 46.05, 14.5), 1_800_000_000, 0)
+	rawB := n.advert(t, meshcore.NewAdvertDataLatLon(meshcore.AdvTypeSensor, "weather 1", 46.05, 14.5), 1_800_000_000, 0)
 	in.Handle(ctx, "meshcore/LJU/"+gwB+"/packets", packetMsg(rawB, 9, -80))
 
 	packets, receptions, err := st.PacketCount(ctx)
@@ -154,7 +154,7 @@ func TestAdvertsFromSeveralGateways(t *testing.T) {
 		t.Fatalf("nodes = %+v", nodes)
 	}
 	got := nodes[0]
-	if got.PubKey != n.mesh.SelfID.String() || got.Name != "hydrant 1" || got.Type != meshcore.AdvTypeSensor ||
+	if got.PubKey != n.mesh.SelfID.String() || got.Name != "weather 1" || got.Type != meshcore.AdvTypeSensor ||
 		!got.HasLoc || got.Lat != 46.05 || got.Lon != 14.5 {
 		t.Errorf("node = %+v", got)
 	}

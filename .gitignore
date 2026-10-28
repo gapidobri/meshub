@@ -12,3 +12,11 @@ go.work.sum
 
 # Per-device example node settings, created from config.go.example
 examples/rak4631/config.go
+
+# Deployment secrets
+deploy/.env
+deploy/mosquitto/passwd
+deploy/certs/
+deploy/compose.override.yaml
+
+deploy/backups/

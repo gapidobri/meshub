@@ -4,7 +4,7 @@
 // of package appproto.
 //
 //	c := client.New("http://meshub:8080", client.WithToken(token))
-//	devices, err := c.Devices(ctx, client.DeviceFilter{Program: "hydrant"})
+//	devices, err := c.Devices(ctx, client.DeviceFilter{Program: "weather"})
 package client
 
 import (

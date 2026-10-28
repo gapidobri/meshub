@@ -1,0 +1,23 @@
+# Who may use which topics. A user's "topic" lines apply to that user;
+# "pattern" lines apply to everyone, with %u replaced by the user name.
+
+# The backend. It reads what gateways hear and asks them to transmit, and
+# publishes device data for applications.
+user meshub
+topic read meshcore/+/+/packets
+topic read meshcore/+/+/status
+topic read meshub/gw/+/tx/result
+topic write meshub/gw/+/tx
+topic write meshub/app/v1/#
+
+# Applications: one user each, reading only its own program's devices.
+# Copy this for every application, with its program.
+user weather
+topic read meshub/app/v1/weather/#
+
+# Gateways: each user is named after the gateway's public key, as it prints
+# at boot ("gateway ABCD..."), and may only use that gateway's topics.
+pattern write meshcore/+/%u/packets
+pattern write meshcore/+/%u/status
+pattern read meshub/gw/%u/tx
+pattern write meshub/gw/%u/tx/result

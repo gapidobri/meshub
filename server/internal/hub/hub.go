@@ -135,6 +135,15 @@ type Echo struct {
 	At      time.Time `json:"at"`
 }
 
+// StoredIdentity returns the hub's identity, if the database has one.
+func StoredIdentity(ctx context.Context, st *store.Store) (meshcore.LocalIdentity, bool, error) {
+	seed, err := st.Setting(ctx, identityKey)
+	if err != nil || len(seed) != 32 {
+		return meshcore.LocalIdentity{}, false, err
+	}
+	return meshcore.LocalIdentityFromSeed(seed), true, nil
+}
+
 // LoadIdentity returns the hub's identity, creating and storing a new one
 // on first use.
 func LoadIdentity(ctx context.Context, st *store.Store) (meshcore.LocalIdentity, error) {

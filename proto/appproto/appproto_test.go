@@ -4,12 +4,12 @@ import "testing"
 
 func TestTopics(t *testing.T) {
 	pk := "ABCD"
-	topic := EventsTopic("hydrant/v2+#", pk)
-	if topic != "meshub/app/v1/hydrant_v2__/devices/ABCD/events" {
+	topic := EventsTopic("weather/v2+#", pk)
+	if topic != "meshub/app/v1/weather_v2__/devices/ABCD/events" {
 		t.Errorf("EventsTopic = %q", topic)
 	}
 	program, gotPK, kind, ok := ParseTopic(topic)
-	if !ok || program != "hydrant_v2__" || gotPK != pk || kind != KindEvents {
+	if !ok || program != "weather_v2__" || gotPK != pk || kind != KindEvents {
 		t.Errorf("ParseTopic = %q %q %q %v", program, gotPK, kind, ok)
 	}
 	for _, bad := range []string{"meshub/app/v1/x/devices/ABCD", "meshub/app/v2/x/devices/A/status", "meshub/app/v1/x/nodes/A/status"} {

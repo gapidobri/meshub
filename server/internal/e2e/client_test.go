@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	mochi "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
 	"github.com/mochi-mqtt/server/v2/listeners"
+	"github.com/mochi-mqtt/server/v2/packets"
 
 	"github.com/gapidobri/meshub/client"
 	"github.com/gapidobri/meshub/proto/appproto"
@@ -58,6 +60,7 @@ type backend struct {
 	app    *appmqtt.App
 	url    string // HTTP
 	broker string
+	mqtt   *mochi.Server
 }
 
 func start(t *testing.T) *backend {
@@ -97,7 +100,7 @@ func start(t *testing.T) *backend {
 	api.Register(mux, st, h, quiet, api.Options{Version: "test", Tokens: []string{token}})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &backend{st: st, hub: h, app: app, url: srv.URL, broker: "tcp://" + addr}
+	return &backend{st: st, hub: h, app: app, url: srv.URL, broker: "tcp://" + addr, mqtt: broker}
 }
 
 func (b *backend) addEvent(t *testing.T, seq uint32) {
@@ -123,7 +126,7 @@ func TestHTTP(t *testing.T) {
 	b := start(t)
 	ctx := context.Background()
 	c := client.New(b.url, client.WithToken(token))
-	if _, err := b.st.Join(ctx, pk, "hydrant", "1.0", "XY12", store.DevicePending, 0, time.Now()); err != nil {
+	if _, err := b.st.Join(ctx, pk, "weather", "1.0", "XY12", store.DevicePending, 0, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,7 +136,7 @@ func TestHTTP(t *testing.T) {
 	if _, err := c.Device(ctx, "EEEE000000000000000000000000000000000000000000000000000000000000"); !errors.Is(err, client.ErrNotFound) {
 		t.Errorf("unknown device: %v", err)
 	}
-	pending, err := c.Devices(ctx, client.DeviceFilter{Program: "hydrant", Status: appproto.DevicePending})
+	pending, err := c.Devices(ctx, client.DeviceFilter{Program: "weather", Status: appproto.DevicePending})
 	if err != nil || len(pending) != 1 || pending[0].Claim != "XY12" {
 		t.Fatalf("pending = %+v, %v", pending, err)
 	}
@@ -164,7 +167,7 @@ func TestHTTP(t *testing.T) {
 		b.addEvent(t, seq)
 	}
 	var ids []int64
-	for e, err := range c.EventsAfter(ctx, "hydrant", 2) {
+	for e, err := range c.EventsAfter(ctx, "weather", 2) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +192,7 @@ func TestListen(t *testing.T) {
 	b := start(t)
 	ctx := context.Background()
 	c := client.New(b.url, client.WithToken(token))
-	if _, err := b.st.Join(ctx, pk, "hydrant", "1.0", "", store.DevicePending, 0, time.Now()); err != nil {
+	if _, err := b.st.Join(ctx, pk, "weather", "1.0", "", store.DevicePending, 0, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// Stored before Listen: these come from the backfill, and again over
@@ -206,7 +209,7 @@ func TestListen(t *testing.T) {
 	go func() {
 		listened <- c.Listen(lctx, client.Subscription{
 			Broker:  b.broker,
-			Program: "hydrant",
+			Program: "weather",
 			OnEvent: func(_ context.Context, e appproto.Event) error {
 				events <- e
 				return nil
@@ -263,7 +266,7 @@ func TestListen(t *testing.T) {
 func TestListenHandlerError(t *testing.T) {
 	b := start(t)
 	ctx := context.Background()
-	if _, err := b.st.Join(ctx, pk, "hydrant", "1.0", "", store.DevicePaired, 0, time.Now()); err != nil {
+	if _, err := b.st.Join(ctx, pk, "weather", "1.0", "", store.DevicePaired, 0, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	b.addEvent(t, 1)
@@ -282,5 +285,115 @@ func TestListenHandlerError(t *testing.T) {
 	})
 	if !errors.Is(err, failed) || len(seen) != 1 || seen[0] != 2 {
 		t.Errorf("Listen = %v after events %v; want %v after [2]", err, seen, failed)
+	}
+}
+
+// subscribeHook runs funcs as the broker handles a client's subscription:
+// before it takes effect, and after but before the client is told.
+type subscribeHook struct {
+	mochi.HookBase
+	before, after func(cl *mochi.Client)
+}
+
+func (h *subscribeHook) ID() string { return "subscribe" }
+
+func (h *subscribeHook) Provides(b byte) bool {
+	return b == mochi.OnSubscribe || b == mochi.OnSubscribed
+}
+
+func (h *subscribeHook) OnSubscribe(cl *mochi.Client, pk packets.Packet) packets.Packet {
+	h.before(cl)
+	return pk
+}
+
+func (h *subscribeHook) OnSubscribed(cl *mochi.Client, _ packets.Packet, _ []byte) { h.after(cl) }
+
+func TestListenReconnect(t *testing.T) {
+	b := start(t)
+	ctx := context.Background()
+	if _, err := b.st.Join(ctx, pk, "weather", "1.0", "", store.DevicePaired, 0, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan int64, 10)
+	if err := b.mqtt.Subscribe(appproto.DevicesFilter("weather"), 1, func(_ *mochi.Client, _ packets.Subscription, p packets.Packet) {
+		if _, _, kind, _ := appproto.ParseTopic(p.TopicName); kind == appproto.KindEvents {
+			var e appproto.Event
+			json.Unmarshal(p.Payload, &e)
+			published <- e.ID
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(seq uint32) {
+		if err := b.st.AddEvent(ctx, pk, store.Event{Seq: seq, Kind: "open", Data: `{}`, ReceivedAt: time.Now()}); err != nil {
+			t.Error(err)
+		}
+		b.app.EventsAdded()
+	}
+
+	// On the app's second subscription, events 2 to 4 are published before
+	// it takes effect, so the app misses them, and event 5 reaches it
+	// before the subscription is acknowledged.
+	var subscribes atomic.Int32
+	b.mqtt.AddHook(&subscribeHook{
+		before: func(cl *mochi.Client) {
+			if cl.ID != "app" || subscribes.Add(1) != 2 {
+				return
+			}
+			for seq := uint32(2); seq <= 4; seq++ {
+				add(seq)
+			}
+			for id := int64(0); id != 4; {
+				select {
+				case id = <-published:
+				case <-time.After(5 * time.Second):
+					t.Error("events 2 to 4 not published")
+					return
+				}
+			}
+		},
+		after: func(cl *mochi.Client) {
+			if cl.ID != "app" || subscribes.Load() != 2 {
+				return
+			}
+			add(5)
+			time.Sleep(200 * time.Millisecond)
+		},
+	}, nil)
+
+	events := make(chan appproto.Event, 10)
+	lctx, cancel := context.WithCancel(ctx)
+	listened := make(chan error, 1)
+	go func() {
+		listened <- client.New(b.url, client.WithToken(token)).Listen(lctx, client.Subscription{
+			Broker:   b.broker,
+			ClientID: "app",
+			Program:  "weather",
+			OnEvent: func(_ context.Context, e appproto.Event) error {
+				events <- e
+				return nil
+			},
+			Logger: quiet,
+		})
+	}()
+
+	add(1)
+	if e := receive(t, events, "first event"); e.ID != 1 {
+		t.Fatalf("event %d, want 1", e.ID)
+	}
+	cl, ok := b.mqtt.Clients.Get("app")
+	if !ok {
+		t.Fatal("app not connected")
+	}
+	cl.Stop(errors.New("dropped by test"))
+
+	for want := int64(2); want <= 5; want++ {
+		if e := receive(t, events, "event after reconnect"); e.ID != want {
+			t.Fatalf("event %d, want %d", e.ID, want)
+		}
+	}
+	cancel()
+	if err := <-listened; err != nil {
+		t.Errorf("Listen = %v", err)
 	}
 }

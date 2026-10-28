@@ -6,11 +6,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -38,7 +40,7 @@ func rootCmd() *cobra.Command {
 		Version:      fullVersion(),
 		SilenceUsage: true,
 	}
-	root.AddCommand(serveCmd(), openapiCmd(), identityCmd(), versionCmd(), healthcheckCmd())
+	root.AddCommand(serveCmd(), openapiCmd(), identityCmd(), backupCmd(), versionCmd(), healthcheckCmd())
 	return root
 }
 
@@ -142,6 +144,57 @@ func healthcheckCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8080/healthz", "URL to check; /readyz also requires the database and broker")
+	return cmd
+}
+
+func backupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backup [file]",
+		Short: "Copy the database, with the hub's private key, while the backend runs",
+		Long: "Copy the database, with the hub's private key, while the backend runs. Without a file, the copy is\n" +
+			"meshub-backup-{time}.db next to the database. The copy is a database like the original: restore it\n" +
+			"by stopping the backend and putting it in place of db.path.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(cmd.Flags())
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(cfg.DB.Path); err != nil {
+				return fmt.Errorf("database: %w", err)
+			}
+			dest := filepath.Join(filepath.Dir(cfg.DB.Path), "meshub-backup-"+time.Now().UTC().Format("20060102-150405")+".db")
+			if len(args) == 1 {
+				dest = args[0]
+			}
+			ctx := cmd.Context()
+			st, err := store.Open(cfg.DB.Path)
+			if err != nil {
+				return err
+			}
+			defer st.Close()
+			if err := st.Backup(ctx, dest); err != nil {
+				return fmt.Errorf("backup: %w", err)
+			}
+
+			// Check the copy holds the identity devices are built with.
+			cp, err := store.Open(dest)
+			if err != nil {
+				return fmt.Errorf("backup unreadable: %w", err)
+			}
+			defer cp.Close()
+			id, ok, err := hub.StoredIdentity(ctx, cp)
+			if err != nil {
+				return fmt.Errorf("backup unreadable: %w", err)
+			}
+			if !ok {
+				return errors.New("backup has no hub identity: the backend never ran on this database")
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\nhub %s\n", dest, id.String())
+			return nil
+		},
+	}
+	addConfigFlags(cmd.Flags())
 	return cmd
 }
 

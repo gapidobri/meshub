@@ -16,7 +16,7 @@ func TestMigrateEventIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, q := range []string{schema, migrations[0], migrations[1], `PRAGMA user_version = 2`,
-		`INSERT INTO devices (pubkey, status, program, firmware, claim, joined_at) VALUES ('AA', 'paired', 'hydrant', '1', '', 1)`,
+		`INSERT INTO devices (pubkey, status, program, firmware, claim, joined_at) VALUES ('AA', 'paired', 'weather', '1', '', 1)`,
 		`INSERT INTO events (pubkey, event_seq, kind, data, received_at) VALUES ('AA', 2, 'b', '2', 20), ('AA', 1, 'a', '1', 10)`,
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -35,7 +35,7 @@ func TestMigrateEventIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].ID != 1 || events[0].Kind != "a" || events[1].ID != 2 || events[1].Program != "hydrant" {
+	if len(events) != 2 || events[0].ID != 1 || events[0].Kind != "a" || events[1].ID != 2 || events[1].Program != "weather" {
 		t.Fatalf("events after migration = %+v", events)
 	}
 	// Resends are still ignored, and new events get new IDs.
@@ -62,7 +62,7 @@ func TestEventsByID(t *testing.T) {
 	}
 	defer st.Close()
 	ctx := context.Background()
-	for _, d := range []struct{ pk, program string }{{"AA", "hydrant"}, {"BB", "meter"}} {
+	for _, d := range []struct{ pk, program string }{{"AA", "weather"}, {"BB", "meter"}} {
 		if _, err := st.Join(ctx, d.pk, d.program, "1", "", DevicePaired, 0, time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -94,7 +94,7 @@ func TestEventsByID(t *testing.T) {
 		{EventQuery{Desc: true, Limit: 2}, []int64{6, 5}},
 		{EventQuery{Before: 5, Desc: true, Limit: 2}, []int64{4, 3}},
 		{EventQuery{PubKey: "BB", Limit: 10}, []int64{2, 4, 6}},
-		{EventQuery{Program: "hydrant", After: 1, Limit: 10}, []int64{3, 5}},
+		{EventQuery{Program: "weather", After: 1, Limit: 10}, []int64{3, 5}},
 	} {
 		if got := ids(tc.q); !equal(got, tc.want) {
 			t.Errorf("%+v = %v, want %v", tc.q, got, tc.want)

@@ -168,7 +168,7 @@ func setupDevice(t *testing.T, opts ...func(*node.Config)) (*Hub, *store.Store, 
 	storage := &node.MemStorage{}
 	cfg := node.Config{
 		Radio: &devRadio{air: a}, Millis: ms, RNG: randRNG{}, RTC: meshcore.NewVolatileRTCClock(ms),
-		Storage: storage, Hub: hubID, Program: "hydrant", Firmware: "0.1", ReplyTimeout: time.Second,
+		Storage: storage, Hub: hubID, Program: "weather", Firmware: "0.1", ReplyTimeout: time.Second,
 		StartDelay: -1, RetryBackoff: -1, Retries: -1,
 	}
 	for _, o := range opts {
@@ -220,7 +220,7 @@ func TestDevicePairingAndConfig(t *testing.T) {
 		t.Fatalf("first Sync = %v, want ErrPending", err)
 	}
 	dev, ok, _ := st.Device(ctx, n.PublicKey())
-	if !ok || dev.Status != store.DevicePending || dev.Program != "hydrant" {
+	if !ok || dev.Status != store.DevicePending || dev.Program != "weather" {
 		t.Fatalf("device = %+v, %v", dev, ok)
 	}
 	if err := h.SetDeviceStatus(ctx, n.PublicKey(), store.DevicePaired); err != nil {
@@ -237,7 +237,7 @@ func TestDevicePairingAndConfig(t *testing.T) {
 	}
 
 	// A config larger than one chunk arrives in pieces.
-	cfg := fmt.Sprintf(`{"audio":{"threshold":42,"bands":[200,2000]},"name":"hydrant 7","notes":%q}`, strings.Repeat("x", 200))
+	cfg := fmt.Sprintf(`{"audio":{"threshold":42,"bands":[200,2000]},"name":"weather 7","notes":%q}`, strings.Repeat("x", 200))
 	version, err := h.SetConfig(ctx, n.PublicKey(), []byte(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +344,7 @@ func TestDeviceStatePersists(t *testing.T) {
 		ms := meshcore.NewSystemMillis()
 		n, err := node.New(node.Config{
 			Radio: &devRadio{air: a}, Millis: ms, RNG: randRNG{}, RTC: meshcore.NewVolatileRTCClock(ms),
-			Storage: storage, Hub: hubID, Program: "hydrant", ReplyTimeout: time.Second,
+			Storage: storage, Hub: hubID, Program: "weather", ReplyTimeout: time.Second,
 			StartDelay: -1, RetryBackoff: -1, Retries: -1,
 		})
 		if err != nil {
