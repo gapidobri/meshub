@@ -38,7 +38,8 @@ authenticated with MeshCore's own datagrams. See
 | [`proto/gwproto/`](proto/gwproto/) | Gateway ↔ backend MQTT topics and encodings, compatible with [meshcoretomqtt](https://github.com/Cisien/meshcoretomqtt) |
 | [`proto/hubproto/`](proto/hubproto/) | Device ↔ hub messages, and the CBOR values that carry config and events |
 | [`proto/appproto/`](proto/appproto/) | Backend ↔ application contract: the HTTP API's values and the MQTT topics |
-| [`server/`](server/) | Backend: MQTT ingest, the hub, SQLite store, web UI, HTTP API and application topics |
+| [`server/`](server/) | Backend, a module of its own: MQTT ingest, the hub, SQLite store, web UI, HTTP API and application topics |
+| [`client/`](client/) | Go client for applications: the HTTP API, and device events, status and commands over MQTT |
 | [`docs/protocol.md`](docs/protocol.md) | The device ↔ hub protocol |
 
 ## Hardware
@@ -70,7 +71,7 @@ shown in the **Hub** panel of the web UI: devices are built with it.
 The backend is configured with a YAML file, `MESHUB_*` environment
 variables and flags, in increasing order of precedence. See
 [`server/meshub.example.yaml`](server/meshub.example.yaml) for every
-setting and its default. Commands (`go run ./server/cmd/meshub -h`):
+setting and its default. Commands (`go -C server run ./cmd/meshub -h`):
 
 | Command | |
 |---------|---|
@@ -117,9 +118,34 @@ the backend.
   | `meshub/app/v1/{program}/devices/{pubkey}/status` | the device, retained; republished on every change, emptied when it is deleted |
   | `meshub/app/v1/{program}/devices/{pubkey}/commands` | a command when it is queued, finished or cancelled (best effort) |
 
-  An application subscribes to `meshub/app/v1/{program}/#` with a
-  persistent session, and on start fills any gap with
+  An application subscribes to `meshub/app/v1/{program}/#`, and on every
+  connect fills the gap with
   `GET /api/v1/events?program={program}&after={last id it has}`.
+
+Go applications use package [`client`](client/), which does both. Its
+`Listen` hands each event on exactly once, in order, resuming after the
+last event the application stored:
+
+```go
+c := client.New("http://meshub:8080", client.WithToken(token))
+err := c.Listen(ctx, client.Subscription{
+	Broker:  "tcp://broker:1883",
+	Program: "hydrant",
+	After:   lastEventID, // from the application's database
+	OnEvent: func(ctx context.Context, e appproto.Event) error {
+		return saveEvent(ctx, e) // and e.ID with it; an error stops Listen
+	},
+	OnStatus: func(d appproto.Device) { updateDevice(d) }, // battery, last check-in, pairing
+})
+```
+
+The rest of the API is plain methods: `c.ApproveDevice`, `c.SetConfig`,
+`c.QueueCommand`, `c.Events` and so on. Errors match `client.ErrNotFound`,
+`ErrConflict`, `ErrInvalid` and the like with `errors.Is`.
+
+The device library and these packages are in the root module, which does
+not depend on what only the backend needs: the backend is its own module,
+`github.com/gapidobri/meshub/server`, built from this repository.
 
 ### 2. Gateway
 

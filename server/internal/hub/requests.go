@@ -121,7 +121,14 @@ func (h *Hub) Receive(ctx context.Context, raw []byte, hash, gateway string) {
 		return
 	}
 	req.hash, req.gateway = hash, gateway
-	time.AfterFunc(collectWindow, func() { h.answer(ctx, req) })
+	if !h.accept() {
+		h.log.Debug("device request dropped: shutting down", "device", short(req.device))
+		return
+	}
+	time.AfterFunc(collectWindow, func() {
+		defer h.answered()
+		h.answer(ctx, req)
+	})
 }
 
 // CalcRxDelay is zero so floods are decoded as they are injected.

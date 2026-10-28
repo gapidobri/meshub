@@ -8,16 +8,18 @@
 
 FROM golang:1.27-alpine AS build
 WORKDIR /src
-# The workspace (go.work) points at sibling checkouts that are not in the
-# build context; build from the module's own requirements.
+# A local go.work may point at sibling checkouts outside the build context;
+# build from the modules' own requirements. The server module uses the root
+# module (for proto/) from this checkout.
 ENV CGO_ENABLED=0 GOWORK=off
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY server/go.mod server/go.sum ./server/
+RUN --mount=type=cache,target=/go/pkg/mod cd server && go mod download
 COPY proto ./proto
 COPY server ./server
 ARG VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
-	go build -trimpath -buildvcs=false -ldflags="-s -w -X main.version=${VERSION}" -o /out/meshub ./server/cmd/meshub
+	cd server && go build -trimpath -buildvcs=false -ldflags="-s -w -X main.version=${VERSION}" -o /out/meshub ./cmd/meshub
 RUN mkdir /out/data
 
 FROM scratch

@@ -63,18 +63,21 @@ $(CONFIG) $(NODE_CONFIG):
 	@echo "created $@: fill in your settings, then run make again"
 	@false
 
+# The backend is its own module (server/go.mod), so that projects using the
+# device library do not depend on what only the backend needs.
 test:
 	go vet ./...
 	go test -race ./...
+	cd server && go vet ./... && go test -race ./...
 
 # Runs the backend against the local broker; the UI is on http://localhost:8080.
 server:
 	@mkdir -p $(BUILD)
-	go run ./server/cmd/meshub serve --db $(BUILD)/meshub.db
+	go -C server run ./cmd/meshub serve --db ../$(BUILD)/meshub.db
 
 # Regenerates the API description from the code; a test fails until it is.
 openapi:
-	go run ./server/cmd/meshub openapi > docs/openapi.yaml
+	go -C server run ./cmd/meshub openapi > docs/openapi.yaml
 
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 

@@ -26,7 +26,7 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 func serve(ctx context.Context, cfg config, log *slog.Logger) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	sig, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	st, err := store.Open(cfg.DB.Path)
@@ -35,10 +35,15 @@ func serve(ctx context.Context, cfg config, log *slog.Logger) error {
 	}
 	defer st.Close()
 
-	id, err := hub.LoadIdentity(ctx, st)
+	id, err := hub.LoadIdentity(sig, st)
 	if err != nil {
 		return err
 	}
+
+	// work bounds handling the mesh. It outlives a shutdown signal until
+	// requests already received from devices are answered.
+	work, cancelWork := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelWork()
 
 	// The hub and the app publisher publish through the connection they
 	// are subscribed on, so the connection is created after them and handed
@@ -70,17 +75,15 @@ func serve(ctx context.Context, cfg config, log *slog.Logger) error {
 	if app != nil {
 		mqttCfg.OnConnect = app.Resync
 	}
-	conn := mqttconn.Connect(mqttCfg, log, append(in.Subscriptions(ctx), h.Subscriptions()...)...)
+	conn := mqttconn.Connect(mqttCfg, log, append(in.Subscriptions(work), h.Subscriptions()...)...)
 	pub.Store(conn)
-	defer conn.Close()
 	log.Info("hub identity", "name", cfg.Hub.Name, "pubkey", h.PublicKey(), "version", fullVersion())
 
 	var wg sync.WaitGroup
-	defer wg.Wait()
-	wg.Go(func() { h.RunAdverts(ctx, cfg.Hub.AdvertInterval) })
-	wg.Go(func() { prune(ctx, log, st, cfg.Retention.Packets, cfg.Retention.Events) })
+	wg.Go(func() { h.RunAdverts(sig, cfg.Hub.AdvertInterval) })
+	wg.Go(func() { prune(sig, log, st, cfg.Retention.Packets, cfg.Retention.Events) })
 	if app != nil {
-		wg.Go(func() { app.Run(ctx) })
+		wg.Go(func() { app.Run(work) })
 	}
 
 	srv := &http.Server{
@@ -91,18 +94,35 @@ func serve(ctx context.Context, cfg config, log *slog.Logger) error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
-	wg.Go(func() {
-		<-ctx.Done()
-		shutdown, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		srv.Shutdown(shutdown)
-	})
+	served := make(chan error, 1)
+	go func() { served <- srv.ListenAndServe() }()
 	log.Info("serving", "addr", cfg.HTTP.Addr, "db", cfg.DB.Path, "ui", cfg.UI.Enabled, "apps", cfg.Apps.Enabled)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-		stop()
-		return err
+
+	var serveErr error
+	select {
+	case <-sig.Done():
+		log.Info("shutting down")
+	case serveErr = <-served:
 	}
-	return nil
+
+	// Stop taking changes, answer the devices already heard while the
+	// broker connection is still up, then stop handling the mesh.
+	deadline, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(deadline); err != nil {
+		log.Warn("http shutdown", "err", err)
+	}
+	if err := h.Shutdown(deadline); err != nil {
+		log.Warn("hub shutdown", "err", err)
+	}
+	conn.Close()
+	cancelWork()
+	stop()
+	wg.Wait()
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		serveErr = nil
+	}
+	return serveErr
 }
 
 // handler serves the API, the health checks and, if enabled, the web UI.

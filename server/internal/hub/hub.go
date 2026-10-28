@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -97,6 +98,13 @@ type Hub struct {
 	asmMu sync.Mutex
 	asm   map[string]*assembly // large messages arriving in fragments, by device
 
+	// answering counts requests received and not yet answered; once
+	// closing is set, no more are taken.
+	answering sync.WaitGroup
+	inFlight  atomic.Int32
+	acceptMu  sync.Mutex // guards closing, and orders it against answering.Add
+	closing   bool
+
 	mu         sync.Mutex
 	pending    map[uint32]pendingTx
 	results    []TxResult
@@ -173,6 +181,45 @@ func (h *Hub) Name() string { return h.name }
 // Subscriptions returns the hub's MQTT subscriptions.
 func (h *Hub) Subscriptions() []mqttconn.Subscription {
 	return []mqttconn.Subscription{{Filter: TxResultFilter, Handle: h.handleTxResult}}
+}
+
+// Shutdown stops taking requests from devices and waits until those already
+// received are answered, or ctx is done. Devices retry requests that go
+// unanswered. The hub keeps transmitting through its publisher meanwhile,
+// so close that after.
+func (h *Hub) Shutdown(ctx context.Context) error {
+	h.acceptMu.Lock()
+	h.closing = true
+	h.acceptMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		h.answering.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("hub: %d requests unanswered: %w", h.inFlight.Load(), ctx.Err())
+	}
+}
+
+// accept registers a request to be answered, reporting false once the hub
+// is shutting down.
+func (h *Hub) accept() bool {
+	h.acceptMu.Lock()
+	defer h.acceptMu.Unlock()
+	if h.closing {
+		return false
+	}
+	h.answering.Add(1)
+	h.inFlight.Add(1)
+	return true
+}
+
+func (h *Hub) answered() {
+	h.inFlight.Add(-1)
+	h.answering.Done()
 }
 
 // advert returns a signed flood advert for the hub, in wire format.

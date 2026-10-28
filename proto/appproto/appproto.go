@@ -16,6 +16,8 @@
 // it changes and on every backend connect; an empty retained message clears
 // it when the device is deleted. Command updates are best effort; GET
 // /api/v1/devices/{PUBLIC_KEY}/commands has the full history.
+//
+// Package github.com/gapidobri/meshub/client implements both for Go.
 package appproto
 
 import (
@@ -48,16 +50,47 @@ func deviceTopic(program, pubKey, kind string) string {
 }
 
 // EventsTopic is where a device's events are published.
-func EventsTopic(program, pubKey string) string { return deviceTopic(program, pubKey, "events") }
+func EventsTopic(program, pubKey string) string { return deviceTopic(program, pubKey, KindEvents) }
 
 // StatusTopic is where a device's status is retained.
-func StatusTopic(program, pubKey string) string { return deviceTopic(program, pubKey, "status") }
+func StatusTopic(program, pubKey string) string { return deviceTopic(program, pubKey, KindStatus) }
 
 // CommandsTopic is where updates to a device's commands are published.
-func CommandsTopic(program, pubKey string) string { return deviceTopic(program, pubKey, "commands") }
+func CommandsTopic(program, pubKey string) string { return deviceTopic(program, pubKey, KindCommands) }
 
 // ProgramFilter matches all of a program's topics.
 func ProgramFilter(program string) string { return TopicPrefix + "/" + TopicLevel(program) + "/#" }
+
+// DevicesFilter matches the device topics of a program, or of all programs
+// if program is empty.
+func DevicesFilter(program string) string {
+	level := "+"
+	if program != "" {
+		level = TopicLevel(program)
+	}
+	return TopicPrefix + "/" + level + "/devices/+/+"
+}
+
+// Topic kinds, the last level of a device topic.
+const (
+	KindEvents   = "events"
+	KindStatus   = "status"
+	KindCommands = "commands"
+)
+
+// ParseTopic splits a device topic. program is as it appears in the topic,
+// after TopicLevel.
+func ParseTopic(topic string) (program, pubKey, kind string, ok bool) {
+	rest, ok := strings.CutPrefix(topic, TopicPrefix+"/")
+	if !ok {
+		return "", "", "", false
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 4 || parts[1] != "devices" {
+		return "", "", "", false
+	}
+	return parts[0], parts[2], parts[3], true
+}
 
 // Device statuses.
 const (

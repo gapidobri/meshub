@@ -565,3 +565,41 @@ func TestDeviceEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestShutdownAnswersPending(t *testing.T) {
+	h, _, a, n, _ := setupDevice(t)
+	ctx := context.Background()
+	a.setLinks(link{gateway: gw1, snr: 5})
+	if err := n.Sync(ctx); !errors.Is(err, node.ErrPending) {
+		t.Fatalf("first Sync = %v", err)
+	}
+	if err := h.SetDeviceStatus(ctx, n.PublicKey(), store.DevicePaired); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("Sync after approval: %v", err)
+	}
+
+	// A check-in heard before the shutdown is still answered.
+	collectWindow = 300 * time.Millisecond
+	synced := make(chan error, 1)
+	go func() { synced <- n.Sync(ctx) }()
+	for deadline := time.Now().Add(time.Second); h.inFlight.Load() == 0; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the check-in never reached the hub")
+		}
+	}
+	shutdown, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := h.Shutdown(shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-synced; err != nil {
+		t.Errorf("Sync during shutdown: %v", err)
+	}
+
+	// Later ones are not.
+	if err := n.Sync(ctx); err == nil {
+		t.Error("Sync after shutdown succeeded")
+	}
+}
