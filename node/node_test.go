@@ -368,6 +368,36 @@ func TestEventTimes(t *testing.T) {
 	}
 }
 
+func TestSetTime(t *testing.T) {
+	hub := newFakeHub(t)
+	storage := &MemStorage{}
+	const gps = 1_700_000_000
+
+	// Events from before SetTime are back-dated from it; events after it are
+	// stamped at once, so a reboot before the next check-in keeps them.
+	n := testNode(t, hub, storage)
+	n.Report("before", hubproto.Null())
+	time.Sleep(1100 * time.Millisecond)
+	if err := n.SetTime(gps); err != nil {
+		t.Fatal(err)
+	}
+	n.Report("after", hubproto.Null())
+
+	n = testNode(t, hub, storage) // reboot
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(hub.events) != 2 {
+		t.Fatalf("%d events, want 2", len(hub.events))
+	}
+	if e := hub.events[0]; e.Kind != "before" || e.Time != gps-1 {
+		t.Errorf("event = %s at %d, want before at %d", e.Kind, e.Time, gps-1)
+	}
+	if e := hub.events[1]; e.Kind != "after" || e.Time < gps || e.Time > gps+2 {
+		t.Errorf("event = %s at %d, want after at about %d", e.Kind, e.Time, gps)
+	}
+}
+
 func TestLargeEventFragments(t *testing.T) {
 	hub := newFakeHub(t)
 	n := testNode(t, hub, &MemStorage{}, func(c *Config) { c.Retries = 1 })

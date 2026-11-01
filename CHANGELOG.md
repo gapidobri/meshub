@@ -12,7 +12,8 @@ The first release.
 
 * The `node` library: pairing with approval, check-ins, config sync with
   validation, events delivered at least once and kept in flash, commands,
-  remote logs, and fragmentation for large messages.
+  remote logs, and fragmentation for large messages. `SetTime` sets the
+  clock from the device's own time source, such as GPS.
 * `node/flashstore`: a power-loss safe key-value store on raw flash.
 * Example firmware for the RAK4631.
 

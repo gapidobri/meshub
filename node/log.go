@@ -41,8 +41,8 @@ func (l *logBuffer) String() string { return string(l.buf) }
 func (l *logBuffer) clear() { l.buf = l.buf[:0] }
 
 // Log adds a line to the node's log buffer, which the hub can fetch with
-// the "logs" command. Lines are stamped with the hub's time once a check-in
-// has set the clock, and with seconds since boot before that.
+// the "logs" command. Lines are stamped with the node's time once a check-in
+// or SetTime has set the clock, and with seconds since boot before that.
 func (n *Node) Log(msg string) {
 	var stamp string
 	if n.clockSet {

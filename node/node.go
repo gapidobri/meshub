@@ -122,7 +122,7 @@ type Node struct {
 	pending int                     // commands the hub has waiting
 
 	floodRTT, directRTT rttEstimator
-	clockSet            bool // the hub set the RTC since boot
+	clockSet            bool // the RTC was set since boot, by the hub or SetTime
 	logs                logBuffer
 
 	wake      uint8
@@ -286,6 +286,20 @@ func (n *Node) ConfigVersion() uint32 { return n.version }
 func (n *Node) SetWakeReason(r uint8)     { n.wake = r }
 func (n *Node) SetBattery(millivolts int) { n.batteryMV = uint16(millivolts) }
 
+// SetTime sets the node's clock to unix seconds, from a time source the
+// program trusts, such as GPS or an RTC that keeps time through power loss.
+// Events reported from then on are stamped right away, and events reported
+// since boot are back-dated from it, so neither depends on reaching the hub
+// before a reboot. Check-ins still set the clock to the hub's time.
+func (n *Node) SetTime(unix uint32) error {
+	n.cfg.RTC.SetCurrentTime(unix)
+	if n.clockSet {
+		return nil
+	}
+	n.clockSet = true
+	return n.stampEvents()
+}
+
 // Sync pairs the node if needed, checks in with the hub, fetches its config
 // if it changed, runs the hub's commands and delivers pending events. It
 // returns ErrPending while pairing awaits approval.
@@ -349,12 +363,8 @@ func (n *Node) hello(ctx context.Context) error {
 	}
 	switch r := reply.(type) {
 	case *hubproto.HelloReply:
-		n.cfg.RTC.SetCurrentTime(r.Time)
-		if !n.clockSet {
-			n.clockSet = true
-			if err := n.stampEvents(); err != nil {
-				return err
-			}
+		if err := n.SetTime(r.Time); err != nil {
+			return err
 		}
 		n.pending = int(r.Commands)
 		if err := n.setPath(r.PathLen, r.Path); err != nil {
@@ -471,9 +481,9 @@ func (n *Node) reportConfig(ctx context.Context) error {
 
 // Report queues an event for the hub. It is stored until the hub
 // acknowledges it; Flush (or Sync) sends it. Events are stamped with the
-// time from the node's clock, which the hub sets at every check-in; one
-// reported before the first check-in since boot is stamped when it
-// happens.
+// time from the node's clock, which the hub sets at every check-in (and
+// the program with SetTime); one reported before the clock is set since
+// boot is stamped when it is, back-dated by the node's uptime.
 func (n *Node) Report(kind string, data hubproto.Value) error {
 	e := pendingEvent{seq: n.st.nextEvent, kind: kind, data: data}
 	if n.clockSet {
