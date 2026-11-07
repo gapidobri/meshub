@@ -20,3 +20,5 @@ deploy/certs/
 deploy/compose.override.yaml
 
 deploy/backups/
+
+**/.DS_Store
