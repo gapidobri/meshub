@@ -571,6 +571,44 @@ func TestDeviceEvents(t *testing.T) {
 	}
 }
 
+func TestDeviceNotices(t *testing.T) {
+	h, st, a, n, _ := setupDevice(t)
+	h.AutoPair = true
+	ctx := context.Background()
+	// Two gateways hear the device directly, so every notice arrives twice.
+	a.setLinks(link{gateway: gw1, snr: 5}, link{gateway: gw2, snr: 2})
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	before := a.transmissions()
+	for i := 0; i < 3; i++ {
+		if err := n.Send(ctx, "p", hubproto.Bytes([]byte{byte(i), 0xFF})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var events []store.Event
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		events, _ = st.Events(ctx, n.PublicKey(), 20)
+		if len(events) >= 3 {
+			break
+		}
+	}
+	time.Sleep(3 * collectWindow) // let any duplicate or reply through
+	events, _ = st.Events(ctx, n.PublicKey(), 20)
+	if len(events) != 3 {
+		t.Fatalf("%d events stored for 3 notices heard twice, want 3", len(events))
+	}
+	for _, e := range events {
+		if e.Kind != "p" || !strings.HasPrefix(e.Data, `{"$bytes":"`) || e.DeviceTime.IsZero() {
+			t.Errorf("event %d = %s %s at %v", e.Seq, e.Kind, e.Data, e.DeviceTime)
+		}
+	}
+	if got := a.transmissions() - before; got != 0 {
+		t.Errorf("hub transmitted %d packets in reply to notices, want none", got)
+	}
+}
+
 func TestShutdownAnswersPending(t *testing.T) {
 	h, _, a, n, _ := setupDevice(t)
 	ctx := context.Background()

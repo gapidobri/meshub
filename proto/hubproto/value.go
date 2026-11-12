@@ -1,6 +1,9 @@
 package hubproto
 
-import "strings"
+import (
+	"encoding/base64"
+	"strings"
+)
 
 // Kind is the type of a Value.
 type Kind uint8
@@ -13,17 +16,21 @@ const (
 	KindString
 	KindList
 	KindMap
+	KindBytes
 )
 
-// Value is a JSON-like value: null, bool, int, float, string, list, or a map
-// with string keys. It carries node configuration and event data. The zero
-// Value is null.
+// Value is a JSON-like value: null, bool, int, float, string, byte string,
+// list, or a map with string keys. It carries node configuration and event
+// data. The zero Value is null.
+//
+// JSON has no byte strings, so in JSON (Any, FromAny) a byte string is the
+// object {"$bytes": "<standard base64>"}.
 type Value struct {
 	kind  Kind
 	b     bool
 	i     int64
 	f     float64
-	s     string
+	s     string   // a string, or a byte string's bytes
 	items []Value  // list items, or map values
 	keys  []string // map keys, parallel to items
 }
@@ -34,9 +41,12 @@ func Int(i int64) Value         { return Value{kind: KindInt, i: i} }
 func Float(f float64) Value     { return Value{kind: KindFloat, f: f} }
 func String(s string) Value     { return Value{kind: KindString, s: s} }
 func List(items ...Value) Value { return Value{kind: KindList, items: items} }
-func Map() Value                { return Value{kind: KindMap} }
-func (v Value) Kind() Kind      { return v.kind }
-func (v Value) IsNull() bool    { return v.kind == KindNull }
+
+// Bytes returns a byte string holding a copy of b.
+func Bytes(b []byte) Value   { return Value{kind: KindBytes, s: string(b)} }
+func Map() Value             { return Value{kind: KindMap} }
+func (v Value) Kind() Kind   { return v.kind }
+func (v Value) IsNull() bool { return v.kind == KindNull }
 
 // Set sets key in a map, replacing an existing entry. It turns a non-map
 // value into a map first.
@@ -129,6 +139,15 @@ func (v Value) String(def string) string {
 	return def
 }
 
+// Bytes returns v as a byte string, or def if it is not one. The result is
+// a copy.
+func (v Value) Bytes(def []byte) []byte {
+	if v.kind == KindBytes {
+		return []byte(v.s)
+	}
+	return def
+}
+
 // Equal reports whether v and o hold the same value. Map order does not
 // matter, and an int equals a float of the same value.
 func (v Value) Equal(o Value) bool {
@@ -144,7 +163,7 @@ func (v Value) Equal(o Value) bool {
 	switch v.kind {
 	case KindBool:
 		return v.b == o.b
-	case KindString:
+	case KindString, KindBytes:
 		return v.s == o.s
 	case KindList:
 		for i := range v.items {
@@ -203,6 +222,9 @@ func FromAny(x any) (Value, bool) {
 		}
 		return List(items...), true
 	case map[string]any:
+		if b, ok := bytesFromAny(x); ok {
+			return b, true
+		}
 		m := Map()
 		for _, k := range sortedKeys(x) {
 			e, ok := FromAny(x[k])
@@ -228,6 +250,8 @@ func (v Value) Any() any {
 		return v.f
 	case KindString:
 		return v.s
+	case KindBytes:
+		return map[string]any{bytesKey: base64.StdEncoding.EncodeToString([]byte(v.s))}
 	case KindList:
 		out := make([]any, len(v.items))
 		for i, e := range v.items {
@@ -242,6 +266,25 @@ func (v Value) Any() any {
 		return out
 	}
 	return nil
+}
+
+// bytesKey is the only key of the JSON object standing for a byte string.
+const bytesKey = "$bytes"
+
+// bytesFromAny recognizes a byte string's JSON form.
+func bytesFromAny(m map[string]any) (Value, bool) {
+	if len(m) != 1 {
+		return Value{}, false
+	}
+	s, ok := m[bytesKey].(string)
+	if !ok {
+		return Value{}, false
+	}
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return Value{}, false
+	}
+	return Bytes(b), true
 }
 
 func sortedKeys(m map[string]any) []string {

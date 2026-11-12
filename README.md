@@ -65,6 +65,8 @@ for {
 	data := hubproto.Map()
 	data.Set("temp_c", hubproto.Float(21.5))
 	n.Report("reading", data) // kept in flash until delivered
+	// or n.Send(ctx, "reading", data): sent once, with no ack and nothing
+	// stored, for frequent data such as positions
 
 	// sleep for interval
 }

@@ -90,7 +90,7 @@ var (
 	ErrConfig   = errors.New("node: config transfer failed")
 )
 
-// ErrTooLarge is returned by Report for an event too large to send.
+// ErrTooLarge is returned by Report and Send for an event too large to send.
 var ErrTooLarge = errors.New("node: event too large")
 
 // ErrUnknownCommand is returned by a Config.Command handler for a command
@@ -114,6 +114,7 @@ type Node struct {
 
 	st      state
 	seq     uint32
+	event   uint32 // next event number
 	events  []pendingEvent
 	config  hubproto.Value
 	version uint32
@@ -230,11 +231,11 @@ func (n *Node) loadState() error {
 	// a stored state the node joins, which resets the hub's count, from a
 	// random number: restarting at 0 would repeat the packets of an earlier
 	// life, which the hub drops as duplicates.
-	n.seq = n.st.seqLimit
+	// The same goes for event numbers: the hub stores one event per number,
+	// so a reused number would be dropped as a duplicate.
+	n.seq, n.event = n.st.seqLimit, n.st.eventLimit
 	if fresh {
-		var b [4]byte
-		n.cfg.RNG.Random(b[:])
-		n.seq = binary.LittleEndian.Uint32(b[:]) >> 1
+		n.seq, n.event = n.random31(), n.random31()
 	}
 	err = load(keyConfig, func(b []byte) error {
 		if len(b) < 4 {
@@ -268,6 +269,14 @@ func (n *Node) loadState() error {
 		n.result, err = decodeResult(b)
 		return err
 	})
+}
+
+// random31 returns a random number below 2^31, leaving the counters it
+// starts plenty of room before they wrap.
+func (n *Node) random31() uint32 {
+	var b [4]byte
+	n.cfg.RNG.Random(b[:])
+	return binary.LittleEndian.Uint32(b[:]) >> 1
 }
 
 // PublicKey returns the node's public key in upper-case hex, as the hub's
@@ -489,7 +498,7 @@ func (n *Node) reportConfig(ctx context.Context) error {
 // the program with SetTime); one reported before the clock is set since
 // boot is stamped when it is, back-dated by the node's uptime.
 func (n *Node) Report(kind string, data hubproto.Value) error {
-	e := pendingEvent{seq: n.st.nextEvent, kind: kind, data: data}
+	e := pendingEvent{kind: kind, data: data}
 	if n.clockSet {
 		e.time = n.cfg.RTC.CurrentTime()
 	} else {
@@ -502,7 +511,9 @@ func (n *Node) Report(kind string, data hubproto.Value) error {
 	if len(body) > hubproto.MaxMessage || len(encodeEvents([]pendingEvent{e})) > n.cfg.MaxEventBytes {
 		return ErrTooLarge
 	}
-	n.st.nextEvent++
+	if e.seq, err = n.nextEvent(); err != nil {
+		return err
+	}
 	n.events = append(n.events, e)
 	stored := encodeEvents(n.events)
 	dropped := 0
@@ -514,10 +525,54 @@ func (n *Node) Report(kind string, data hubproto.Value) error {
 	if dropped > 0 {
 		n.Log("event queue full: dropped " + strconv.Itoa(dropped) + " oldest")
 	}
-	if err := n.saveState(); err != nil {
+	return n.cfg.Storage.Save(keyEvents, stored)
+}
+
+// Send sends an event to the hub once, as a notice the hub stores without
+// replying. Unlike Report, nothing is stored or resent: a lost notice is
+// gone. It suits frequent data whose next sample supersedes the last, such
+// as positions, and costs half the airtime of a reported event.
+//
+// It goes direct when the node knows its path to the hub, else floods.
+// Since the hub does not reply, the node cannot tell that a direct path
+// went stale; a program that mostly sends should Sync or Flush now and
+// then, which refreshes the path. Send returns once the radio has
+// transmitted the notice. The event is stamped with the node's clock, or
+// with 0 (the hub then uses the time it received it) if the clock was not
+// set since boot.
+func (n *Node) Send(ctx context.Context, kind string, data hubproto.Value) error {
+	if !n.st.paired {
+		return ErrPending
+	}
+	m := &hubproto.Notice{Event: hubproto.Event{Kind: kind, Data: data}}
+	if _, err := hubproto.Encode(nil, 0, m, hubproto.MaxPlaintext); err != nil {
+		if errors.Is(err, hubproto.ErrTooLarge) {
+			return ErrTooLarge
+		}
 		return err
 	}
-	return n.cfg.Storage.Save(keyEvents, stored)
+	if n.clockSet {
+		m.Event.Time = n.cfg.RTC.CurrentTime()
+	}
+	var err error
+	if m.Event.Seq, err = n.nextEvent(); err != nil {
+		return err
+	}
+	return n.transmit(ctx, m)
+}
+
+// nextEvent returns a fresh event number, reserving a block in storage
+// when the current one runs out.
+func (n *Node) nextEvent() (uint32, error) {
+	if n.event >= n.st.eventLimit {
+		n.st.eventLimit = n.event + seqReserve
+		if err := n.saveState(); err != nil {
+			return 0, err
+		}
+	}
+	e := n.event
+	n.event++
+	return e, nil
 }
 
 // stampEvents gives events reported before the clock was set the time they

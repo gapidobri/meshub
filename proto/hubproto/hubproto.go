@@ -45,6 +45,7 @@ const (
 	TypeCommandGet    Type = 0x06
 	TypeCommandResult Type = 0x07
 	TypeFragment      Type = 0x08
+	TypeNotice        Type = 0x09
 
 	TypeJoinReply   Type = 0x81
 	TypeHelloReply  Type = 0x82
@@ -143,6 +144,13 @@ type Event struct {
 	Data Value
 }
 
+// Notice carries one event that the hub stores without replying. It is for
+// frequent, disposable data such as positions: the node sends it once and
+// does not keep it, and a lost notice is simply gone.
+type Notice struct {
+	Event Event
+}
+
 // ConfigStatus reports whether the node applied a config version.
 type ConfigStatus struct {
 	ConfigVersion uint32
@@ -211,6 +219,7 @@ func (*ConfigStatus) Type() Type  { return TypeConfigStatus }
 func (*CommandGet) Type() Type    { return TypeCommandGet }
 func (*CommandResult) Type() Type { return TypeCommandResult }
 func (*Fragment) Type() Type      { return TypeFragment }
+func (*Notice) Type() Type        { return TypeNotice }
 func (*JoinReply) Type() Type     { return TypeJoinReply }
 func (*HelloReply) Type() Type    { return TypeHelloReply }
 func (*ConfigChunk) Type() Type   { return TypeConfigChunk }
@@ -301,6 +310,10 @@ func DecodeMessage(src []byte) (Message, error) {
 			e.Events = append(e.Events, ev)
 		}
 		m = e
+	case TypeNotice:
+		ev := Event{Seq: r.u32(), Time: r.u32(), Kind: r.str()}
+		ev.Data = r.value()
+		m = &Notice{Event: ev}
 	case TypeConfigStatus:
 		m = &ConfigStatus{ConfigVersion: r.u32(), Status: r.u8(), Reason: r.str()}
 	case TypeCommandGet:
@@ -371,15 +384,24 @@ func (m *Events) appendBody(dst []byte) ([]byte, error) {
 	}
 	dst = append(dst, byte(len(m.Events)))
 	for _, e := range m.Events {
-		dst = binary.LittleEndian.AppendUint32(dst, e.Seq)
-		dst = binary.LittleEndian.AppendUint32(dst, e.Time)
 		var err error
-		if dst, err = appendStrs(dst, e.Kind); err != nil {
+		if dst, err = e.appendTo(dst); err != nil {
 			return dst, err
 		}
-		dst = e.Data.AppendCBOR(dst)
 	}
 	return dst, nil
+}
+
+func (m *Notice) appendBody(dst []byte) ([]byte, error) { return m.Event.appendTo(dst) }
+
+func (e *Event) appendTo(dst []byte) ([]byte, error) {
+	dst = binary.LittleEndian.AppendUint32(dst, e.Seq)
+	dst = binary.LittleEndian.AppendUint32(dst, e.Time)
+	dst, err := appendStrs(dst, e.Kind)
+	if err != nil {
+		return dst, err
+	}
+	return e.Data.AppendCBOR(dst), nil
 }
 
 func (m *ConfigStatus) appendBody(dst []byte) ([]byte, error) {

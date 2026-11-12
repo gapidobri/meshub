@@ -93,6 +93,8 @@ func TestCBORVectors(t *testing.T) {
 		{"f6", Null()},
 		{"6449455446", String("IETF")},
 		{"83010203", List(Int(1), Int(2), Int(3))},
+		{"40", Bytes(nil)},
+		{"4401020304", Bytes([]byte{1, 2, 3, 4})},
 	} {
 		enc := hex.EncodeToString(tc.v.AppendCBOR(nil))
 		if enc != tc.hex {
@@ -124,6 +126,7 @@ func TestCBORRejectsBadInput(t *testing.T) {
 		"9f",                 // indefinite length
 		"1bffffffffffffffff", // uint beyond int64
 		"c0",                 // tag
+		"43ff",               // truncated byte string
 	} {
 		raw, _ := hex.DecodeString(h)
 		if _, _, err := DecodeCBOR(raw); err == nil {
@@ -154,6 +157,42 @@ func TestJSONConversion(t *testing.T) {
 	}
 }
 
+func TestBytes(t *testing.T) {
+	raw := []byte{0, 1, 0xFE, 0xFF}
+	v := Bytes(raw)
+	raw[0] = 9 // Bytes copies
+	if got := v.Bytes(nil); !bytes.Equal(got, []byte{0, 1, 0xFE, 0xFF}) || v.Kind() != KindBytes {
+		t.Fatalf("Bytes = %x (kind %d)", got, v.Kind())
+	}
+	if got := String("x").Bytes([]byte{7}); !bytes.Equal(got, []byte{7}) {
+		t.Errorf("Bytes of a string = %x, want the default", got)
+	}
+	if v.Equal(String("\x00\x01\xfe\xff")) {
+		t.Error("a byte string equals a text string")
+	}
+
+	// In JSON, a byte string is {"$bytes": base64}.
+	m := Map()
+	m.Set("p", v)
+	js, _ := json.Marshal(m.Any())
+	if string(js) != `{"p":{"$bytes":"AAH+/w=="}}` {
+		t.Errorf("JSON = %s", js)
+	}
+	var x any
+	json.Unmarshal(js, &x)
+	back, ok := FromAny(x)
+	if !ok || !back.Equal(m) {
+		t.Errorf("from JSON = %v, %v", back.Any(), ok)
+	}
+	// Anything else stays a map.
+	for _, s := range []string{`{"$bytes":"!!"}`, `{"$bytes":1}`, `{"$bytes":"AA==","x":1}`} {
+		json.Unmarshal([]byte(s), &x)
+		if v, ok := FromAny(x); !ok || v.Kind() != KindMap {
+			t.Errorf("%s = %v (kind %d)", s, v.Any(), v.Kind())
+		}
+	}
+}
+
 func TestMessagesRoundTrip(t *testing.T) {
 	data := Map()
 	data.Set("duration_s", Int(93))
@@ -166,6 +205,7 @@ func TestMessagesRoundTrip(t *testing.T) {
 		&ConfigStatus{ConfigVersion: 5, Status: ConfigRejected, Reason: "interval_s must be positive"},
 		&CommandGet{},
 		&CommandResult{ID: 7, Status: CommandOK, Result: data},
+		&Notice{Event: Event{Seq: 19, Time: 1_800_000_060, Kind: "p", Data: Bytes(bytes.Repeat([]byte{0xA5}, 12))}},
 		&Fragment{Xfer: 0xBEEF, Total: 400, Offset: 154, Data: bytes.Repeat([]byte{3}, FragmentSize)},
 		&JoinReply{Status: JoinPending},
 		&HelloReply{Time: 1_800_000_000, PathLen: 0x42, Path: []byte{1, 2, 3, 4}, ConfigVersion: 5, ConfigLen: 300, ConfigCRC: 0xDEADBEEF, Commands: 2},
@@ -209,6 +249,9 @@ func messageEqual(a, b Message) bool {
 			}
 		}
 		return true
+	case *Notice:
+		b, ok := b.(*Notice)
+		return ok && messageEqual(&Events{Events: []Event{a.Event}}, &Events{Events: []Event{b.Event}})
 	case *CommandResult:
 		b, ok := b.(*CommandResult)
 		return ok && a.ID == b.ID && a.Status == b.Status && a.Result.Equal(b.Result)
