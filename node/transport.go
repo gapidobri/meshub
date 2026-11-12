@@ -161,30 +161,10 @@ func (n *Node) requestFragmented(ctx context.Context, m hubproto.Message) (hubpr
 }
 
 func (n *Node) send(ctx context.Context, m hubproto.Message, anon, direct bool, timeout time.Duration) (hubproto.Message, error) {
-	seq, err := n.nextSeq()
+	seq, err := n.queue(m, anon, direct)
 	if err != nil {
 		return nil, err
 	}
-	pt, err := hubproto.Encode(nil, seq, m, n.maxPlaintext(anon))
-	if err != nil {
-		return nil, err
-	}
-
-	var pkt *meshcore.Packet
-	if anon {
-		pkt = n.mesh.CreateAnonDatagram(meshcore.PayloadTypeAnonReq, &n.mesh.SelfID, &n.cfg.Hub, n.secret[:], pt)
-	} else {
-		pkt = n.mesh.CreateDatagram(meshcore.PayloadTypeReq, &n.cfg.Hub, n.secret[:], pt)
-	}
-	if pkt == nil {
-		return nil, errors.New("node: no packet buffer")
-	}
-	if direct {
-		n.mesh.SendDirect(pkt, n.st.path, n.st.pathLen, 0)
-	} else {
-		n.mesh.SendFlood(pkt, 0, 1)
-	}
-
 	n.h.await(seq)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -199,6 +179,68 @@ func (n *Node) send(ctx context.Context, m hubproto.Message, anon, direct bool, 
 		time.Sleep(time.Millisecond)
 	}
 	return nil, ErrNoReply
+}
+
+// sendTimeout bounds how long transmit waits for the radio, which may hold
+// a packet back while the channel is busy or its duty cycle budget is
+// spent.
+const sendTimeout = 30 * time.Second
+
+// errTransmit is returned by transmit when the radio failed to send.
+var errTransmit = errors.New("node: radio failed to transmit")
+
+// transmit sends m to the hub, expecting no reply, and returns once the
+// radio has sent it. It goes direct when the node knows its path.
+func (n *Node) transmit(ctx context.Context, m hubproto.Message) error {
+	if _, err := n.queue(m, false, n.st.hasPath); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(sendTimeout)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n.mesh.Loop()
+		n.cfg.RTC.Tick()
+		if done, ok := n.h.sent(); done {
+			if !ok {
+				return errTransmit
+			}
+			return nil
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return errTransmit
+}
+
+// queue encodes m with a fresh request number and queues it for the radio,
+// returning the number.
+func (n *Node) queue(m hubproto.Message, anon, direct bool) (uint32, error) {
+	seq, err := n.nextSeq()
+	if err != nil {
+		return 0, err
+	}
+	pt, err := hubproto.Encode(nil, seq, m, n.maxPlaintext(anon))
+	if err != nil {
+		return 0, err
+	}
+
+	var pkt *meshcore.Packet
+	if anon {
+		pkt = n.mesh.CreateAnonDatagram(meshcore.PayloadTypeAnonReq, &n.mesh.SelfID, &n.cfg.Hub, n.secret[:], pt)
+	} else {
+		pkt = n.mesh.CreateDatagram(meshcore.PayloadTypeReq, &n.cfg.Hub, n.secret[:], pt)
+	}
+	if pkt == nil {
+		return 0, errors.New("node: no packet buffer")
+	}
+	n.h.track(pkt)
+	if direct {
+		n.mesh.SendDirect(pkt, n.st.path, n.st.pathLen, 0)
+	} else {
+		n.mesh.SendFlood(pkt, 0, 1)
+	}
+	return seq, nil
 }
 
 // nextSeq returns a fresh request number, reserving a block in storage when
@@ -222,6 +264,28 @@ type handler struct {
 	waitSeq uint32
 	waiting bool
 	reply   hubproto.Message
+
+	// The packet last queued, until the radio has sent it or failed to.
+	pending      *meshcore.Packet
+	done, sentOK bool
+}
+
+func (h *handler) track(p *meshcore.Packet) { h.pending, h.done, h.sentOK = p, false, false }
+
+// sent reports whether the tracked packet left the radio, and if so
+// whether it was sent.
+func (h *handler) sent() (done, ok bool) { return h.done, h.sentOK }
+
+func (h *handler) LogTx(p *meshcore.Packet, _ int) {
+	if p == h.pending {
+		h.pending, h.done, h.sentOK = nil, true, true
+	}
+}
+
+func (h *handler) LogTxFail(p *meshcore.Packet, _ int) {
+	if p == h.pending {
+		h.pending, h.done, h.sentOK = nil, true, false
+	}
 }
 
 func (h *handler) await(seq uint32) { h.waitSeq, h.waiting, h.reply = seq, true, nil }

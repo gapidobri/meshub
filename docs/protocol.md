@@ -99,9 +99,10 @@ Integers are little-endian. `str` is a one-byte length and UTF-8 bytes.
 | 0x06 | CommandGet | (empty) |
 | 0x07 | CommandResult | `cmd_id u32, status u8, result value` |
 | 0x08 | Fragment   | `xfer u16, total u16, offset u16, len u8, data [len]u8` |
+| 0x09 | Notice     | `event_seq u32, time u32, kind str, data value` (no reply) |
 
 `wake_reason`: 0 unknown, 1 power on, 2 timer, 3 pin, 4 other.
-`Events.time`: when the event happened, unix seconds by the node's clock; 0
+`Events.time` and `Notice.time`: when the event happened, unix seconds by the node's clock; 0
 if the node did not know the time.
 `ConfigStatus.status`: 0 applied, 1 rejected (`reason` says why).
 `CommandResult.status`: 0 ok, 1 failed (`result` is the error message), 2
@@ -211,6 +212,31 @@ since boot is stamped when the clock is set, back-dated by the node's
 uptime clock. One queued before a reboot and never stamped is sent with
 time 0, and the hub uses the time it received it.
 
+Event numbers increase with every event, reported or sent as a notice,
+and are never reused: the node reserves them in blocks across reboots,
+and a node without stored state starts them at a random number, so its
+events are not taken for copies of earlier ones.
+
+### Notices
+
+A notice carries one event that the hub stores like any other, but does
+not answer:
+
+```
+node                                    hub
+ | Notice(19, t, "p", h'…')  -------->  |  stored, no reply
+```
+
+It is for frequent data whose next sample supersedes the last, such as a
+position: one transmission instead of a request and a reply. The node
+sends it once and keeps nothing, so a lost notice is gone. It goes direct
+along the node's path to the hub, or floods without one; since nothing
+comes back, a node cannot tell that the path went stale, nor that the hub
+no longer knows it (the hub's `Error(not paired)` goes unheard). Nodes
+that mostly send notices check in now and then to find out. A flood
+notice updates the hub's route to the node, like any flood request. A
+notice must fit one datagram; it is never fragmented.
+
 ### Commands
 
 The operator queues commands in the web UI. The hub counts the waiting
@@ -269,12 +295,14 @@ idempotent.
 ## Values
 
 Config and event data are CBOR (RFC 8949), restricted to what a JSON
-document can hold, so the web UI can show and edit them as JSON:
+document can hold, plus byte strings, so the web UI can show and edit them
+as JSON:
 
 * unsigned and negative integers (major types 0 and 1), up to 64 bits
 * floats: half, single and double precision are decoded; floats are
   encoded as the shortest of single or double that is exact
 * text strings (major type 3)
+* byte strings (major type 2), shown in JSON as `{"$bytes": "<base64>"}`
 * arrays (major type 4) and maps with text keys (major type 5), definite
   length only
 * `false`, `true`, `null`

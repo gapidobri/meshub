@@ -239,7 +239,8 @@ components:
     Event:
       additionalProperties: true
       properties:
-        data: {}
+        data:
+          description: "The event's value as the device encoded it. A byte string appears as {\"$bytes\": \"<base64>\"}"
         device:
           description: The device's public key
           type: string

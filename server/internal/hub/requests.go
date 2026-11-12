@@ -197,6 +197,7 @@ func (h *Hub) answer(ctx context.Context, req *request) {
 		return
 	}
 	if reply == nil {
+		log.Debug("device request", "req", typeName(req.msg.Type()), "reply", "none", "direct", req.direct)
 		return
 	}
 	if err := h.reply(req, route, reply); err != nil {
@@ -321,19 +322,14 @@ func (h *Hub) handleMessage(ctx context.Context, req *request, route store.Route
 		return &hubproto.Ack{}, nil
 
 	case *hubproto.Events:
-		for _, e := range m.Events {
-			data, _ := json.Marshal(e.Data.Any())
-			ev := store.Event{Seq: e.Seq, Kind: e.Kind, Data: string(data), ReceivedAt: h.now()}
-			if e.Time != 0 {
-				ev.DeviceTime = time.Unix(int64(e.Time), 0)
-			}
-			if err := h.st.AddEvent(ctx, req.device, ev); err != nil {
-				return nil, err
-			}
-			h.log.Info("device event", "device", short(req.device), "kind", e.Kind, "data", string(data))
+		if err := h.addEvents(ctx, req.device, m.Events...); err != nil {
+			return nil, err
 		}
-		h.Notify.EventsAdded()
 		return &hubproto.Ack{}, nil
+
+	case *hubproto.Notice:
+		// Stored like any event, but the node expects no reply.
+		return nil, h.addEvents(ctx, req.device, m.Event)
 
 	case *hubproto.CommandGet:
 		c, ok, err := h.st.NextCommand(ctx, req.device)
@@ -363,6 +359,23 @@ func (h *Hub) handleMessage(ctx context.Context, req *request, route store.Route
 		return &hubproto.Ack{}, nil
 	}
 	return &hubproto.Error{Code: hubproto.ErrBadRequest}, nil
+}
+
+// addEvents stores a device's events, ignoring ones it already has.
+func (h *Hub) addEvents(ctx context.Context, device string, events ...hubproto.Event) error {
+	for _, e := range events {
+		data, _ := json.Marshal(e.Data.Any())
+		ev := store.Event{Seq: e.Seq, Kind: e.Kind, Data: string(data), ReceivedAt: h.now()}
+		if e.Time != 0 {
+			ev.DeviceTime = time.Unix(int64(e.Time), 0)
+		}
+		if err := h.st.AddEvent(ctx, device, ev); err != nil {
+			return err
+		}
+		h.log.Info("device event", "device", short(device), "kind", e.Kind, "data", string(data))
+	}
+	h.Notify.EventsAdded()
+	return nil
 }
 
 // assemblyTTL is how long a partly received large message is kept.
@@ -486,6 +499,8 @@ func typeName(t hubproto.Type) string {
 		return "config-get"
 	case hubproto.TypeEvents:
 		return "events"
+	case hubproto.TypeNotice:
+		return "notice"
 	case hubproto.TypeConfigStatus:
 		return "config-status"
 	case hubproto.TypeCommandGet:
