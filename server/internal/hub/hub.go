@@ -98,6 +98,9 @@ type Hub struct {
 	asmMu sync.Mutex
 	asm   map[string]*assembly // large messages arriving in fragments, by device
 
+	lostMu sync.Mutex
+	lost   map[string]*replyState // how replies to each device are getting through
+
 	// answering counts requests received and not yet answered; once
 	// closing is set, no more are taken.
 	answering sync.WaitGroup
@@ -173,6 +176,7 @@ func New(id meshcore.LocalIdentity, name string, pub Publisher, st *store.Store,
 		now:     time.Now,
 		pending: map[uint32]pendingTx{},
 		asm:     map[string]*assembly{},
+		lost:    map[string]*replyState{},
 	}
 	var b [4]byte
 	rand.Read(b[:])

@@ -223,20 +223,33 @@ func (s *Store) AddReception(ctx context.Context, r Reception) (first bool, err 
 	return n == 1, tx.Commit()
 }
 
-// BestReception returns the reception of a packet over the fewest hops, best
-// SNR first.
-func (s *Store) BestReception(ctx context.Context, hash string) (Reception, bool, error) {
-	r := Reception{Hash: hash}
-	var at int64
-	err := s.db.QueryRowContext(ctx, `
+// Receptions returns the distinct routes a packet was heard over, best
+// first (fewest hops, then best SNR), one per gateway and path.
+func (s *Store) Receptions(ctx context.Context, hash string) ([]Reception, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT gateway, snr, rssi, hops, path_len, path, received_at FROM receptions
-		WHERE hash = ? AND direction = 'rx' ORDER BY hops, snr DESC LIMIT 1`, hash).
-		Scan(&r.Gateway, &r.SNR, &r.RSSI, &r.Hops, &r.PathLen, &r.Path, &at)
-	if errors.Is(err, sql.ErrNoRows) {
-		return r, false, nil
+		WHERE hash = ? AND direction = 'rx' ORDER BY hops, snr DESC`, hash)
+	if err != nil {
+		return nil, err
 	}
-	r.ReceivedAt = time.UnixMilli(at)
-	return r, err == nil, err
+	defer rows.Close()
+	var out []Reception
+	seen := map[string]bool{}
+	for rows.Next() {
+		r := Reception{Hash: hash}
+		var at int64
+		if err := rows.Scan(&r.Gateway, &r.SNR, &r.RSSI, &r.Hops, &r.PathLen, &r.Path, &at); err != nil {
+			return nil, err
+		}
+		key := fmt.Sprintf("%s/%d/%X", r.Gateway, r.PathLen, r.Path)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		r.ReceivedAt = time.UnixMilli(at)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func nonNil(b []byte) []byte {

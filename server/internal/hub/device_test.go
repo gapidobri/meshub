@@ -26,6 +26,8 @@ type link struct {
 	gateway   string
 	repeaters []byte
 	snr       int
+	upOnly    bool // the gateway hears the device this way, but replies are lost
+	downOnly  bool // replies reach the device this way, but the gateway does not hear it
 }
 
 // air simulates the radio between one device and the gateways, routing
@@ -59,6 +61,9 @@ func (a *air) uplink(raw []byte) {
 	links := append([]link(nil), a.links...)
 	a.mu.Unlock()
 	for _, l := range links {
+		if l.downOnly {
+			continue
+		}
 		heard := p
 		if p.IsRouteFlood() {
 			n := copy(heard.Path[heard.PathByteLen():], l.repeaters)
@@ -90,7 +95,7 @@ func (a *air) Publish(topic string, payload []byte) error {
 	defer a.mu.Unlock()
 	a.tx++
 	for _, l := range a.links {
-		if l.gateway != gateway {
+		if l.gateway != gateway || l.upOnly {
 			continue
 		}
 		want := make([]byte, len(l.repeaters))
@@ -601,5 +606,99 @@ func TestShutdownAnswersPending(t *testing.T) {
 	// Later ones are not.
 	if err := n.Sync(ctx); err == nil {
 		t.Error("Sync after shutdown succeeded")
+	}
+}
+
+// A gateway hears the device best through a repeater that does not carry
+// replies back. The hub notices the resent request and answers along the
+// next best reception, which then sticks for later check-ins.
+func TestDeviceLostReplyNextBestRoute(t *testing.T) {
+	h, st, a, n, _ := setupDevice(t, func(c *node.Config) { c.Retries = 2 })
+	h.AutoPair = true
+	ctx := context.Background()
+
+	a.setLinks(
+		link{gateway: gw1, repeaters: []byte{0xAA}, snr: 9, upOnly: true},
+		link{gateway: gw1, repeaters: []byte{0xBB, 0xCC}, snr: 2},
+	)
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	r, _, _ := st.Route(ctx, n.PublicKey())
+	if !bytes.Equal(r.Path, []byte{0xBB, 0xCC}) {
+		t.Errorf("route path = %X, want BBCC", r.Path)
+	}
+
+	// The next check-in goes direct along BB, CC and is answered at once.
+	before := a.transmissions()
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("direct Sync: %v", err)
+	}
+	if got := a.transmissions() - before; got != 1 {
+		t.Errorf("hub transmitted %d packets for one direct hello, want 1", got)
+	}
+
+	// A later flood is answered along BB, CC straight away, not AA.
+	h.lostMu.Lock()
+	level := h.lost[n.PublicKey()].level
+	h.lostMu.Unlock()
+	if level != 1 {
+		t.Errorf("reply level = %d, want 1", level)
+	}
+}
+
+// No reception's path carries replies back, so the hub floods the reply,
+// and keeps flooding replies to the device's direct requests.
+func TestDeviceLostReplyFlood(t *testing.T) {
+	h, _, a, n, _ := setupDevice(t, func(c *node.Config) { c.Retries = 2 })
+	h.AutoPair = true
+	ctx := context.Background()
+
+	a.setLinks(
+		link{gateway: gw1, repeaters: []byte{0xAA}, snr: 9, upOnly: true},
+		link{gateway: gw1, repeaters: []byte{0xDD}, snr: 9, downOnly: true},
+	)
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	// The device now goes direct along AA; the reply must be flooded.
+	if err := n.Sync(ctx); err != nil {
+		t.Fatalf("direct Sync: %v", err)
+	}
+}
+
+func TestReplyLevel(t *testing.T) {
+	h, _, _ := newHub(t)
+	now := time.Unix(1_000_000, 0)
+	h.now = func() time.Time { return now }
+	const dev = "D"
+
+	if l := h.replyLevel(dev, "hello", false, quiet); l != 0 {
+		t.Fatalf("first hello: level %d, want 0", l)
+	}
+	h.noteReply(dev, "hello")
+	now = now.Add(10 * time.Second) // resent: the reply was lost
+	if l := h.replyLevel(dev, "hello", false, quiet); l != 1 {
+		t.Fatalf("resent hello: level %d, want 1", l)
+	}
+	h.noteReply(dev, "hello")
+	now = now.Add(2 * time.Second) // the next request of the sequence: it got through
+	if l := h.replyLevel(dev, "events/1", false, quiet); l != 1 {
+		t.Fatalf("next request: level %d, want 1 (held)", l)
+	}
+	h.noteReply(dev, "events/1")
+	now = now.Add(time.Second) // a direct hello is never a resend
+	if l := h.replyLevel(dev, "events/1", true, quiet); l != 1 {
+		t.Fatalf("direct repeat: level %d, want 1", l)
+	}
+	h.noteReply(dev, "events/1")
+	now = now.Add(5 * time.Minute) // next check-in: still on the fallback
+	if l := h.replyLevel(dev, "hello", false, quiet); l != 1 {
+		t.Fatalf("next check-in: level %d, want 1", l)
+	}
+	h.noteReply(dev, "hello")
+	now = now.Add(lostReplyMemory + time.Minute) // long without a loss: try the best route again
+	if l := h.replyLevel(dev, "hello", false, quiet); l != 0 {
+		t.Fatalf("after lostReplyMemory: level %d, want 0", l)
 	}
 }

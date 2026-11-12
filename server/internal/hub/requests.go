@@ -186,7 +186,9 @@ func (r *receiver) decode(p *meshcore.Packet, id meshcore.Identity, secret *[mes
 // answer handles a request and sends the reply.
 func (h *Hub) answer(ctx context.Context, req *request) {
 	log := h.log.With("device", short(req.device), "seq", req.seq)
-	route, err := h.replyRoute(ctx, req)
+	key := retryKey(req.msg)
+	level := h.replyLevel(req.device, key, req.direct, log)
+	route, flood, err := h.replyRoute(ctx, req, level)
 	if err != nil {
 		log.Warn("device route", "err", err)
 		return
@@ -199,36 +201,146 @@ func (h *Hub) answer(ctx context.Context, req *request) {
 	if reply == nil {
 		return
 	}
-	if err := h.reply(req, route, reply); err != nil {
+	if err := h.reply(req, route, flood, reply); err != nil {
 		log.Warn("device reply", "err", err)
 		return
 	}
+	h.noteReply(req.device, key)
 	log.Info("device request", "req", typeName(req.msg.Type()), "reply", typeName(reply.Type()),
-		"gateway", short(route.Gateway), "hops", int(route.PathLen&63), "direct", req.direct)
+		"gateway", short(route.Gateway), "hops", int(route.PathLen&63), "path", meshcore.ToHex(route.Path),
+		"direct", req.direct, "flood_reply", flood, "level", level)
 }
 
-// replyRoute picks the gateway and path to reply through. A flood request
-// is answered along the path of its best reception, which becomes the
-// device's stored route; a direct request, whose path is used up on
-// arrival, along the stored route.
-func (h *Hub) replyRoute(ctx context.Context, req *request) (store.Route, error) {
-	if !req.direct {
-		best, ok, err := h.st.BestReception(ctx, req.hash)
-		if err != nil {
-			return store.Route{}, err
+// retryWindow is how soon after a reply a device's resend of the same
+// request means the reply was lost. A node resends after its reply
+// timeout (at most 8s by default) and a backoff of a few seconds.
+var retryWindow = 30 * time.Second
+
+// lostReplyMemory is how long the hub keeps answering a device over a
+// fallback route after its last lost reply, before it tries the best
+// route again. It bounds how long one bad stretch steers the replies.
+var lostReplyMemory = time.Hour
+
+// maxReplyLevel caps how far the hub falls back; beyond the last
+// distinct reception every level means a flooded reply.
+const maxReplyLevel = 8
+
+// replyState tracks whether replies are getting through to a device.
+type replyState struct {
+	key    string    // the last request answered
+	at     time.Time // when it was answered
+	level  int       // 0: best reception; n: the n-th next best; past them all: flood
+	lostAt time.Time // when level was last raised
+	flood  bool      // the last flood request was answered with a flood
+}
+
+// replyLevel returns how far to fall back from the best route for a
+// request with the given retry key. A flood request repeating the last one
+// within retryWindow means that reply was lost, so the level goes up. A
+// direct request never does: a node that loses a direct reply drops its
+// path and resends by flood. The level then holds, so later check-ins
+// skip the failing route, until lostReplyMemory passes without another
+// loss.
+func (h *Hub) replyLevel(device, key string, direct bool, log interface{ Info(string, ...any) }) int {
+	now := h.now()
+	h.lostMu.Lock()
+	defer h.lostMu.Unlock()
+	s := h.lost[device]
+	if s == nil {
+		s = &replyState{}
+		h.lost[device] = s
+	}
+	if s.level > 0 && now.Sub(s.lostAt) > lostReplyMemory {
+		s.level, s.flood = 0, false
+	}
+	if !direct && s.key == key && now.Sub(s.at) < retryWindow {
+		s.level = min(s.level+1, maxReplyLevel)
+		s.lostAt = now
+		log.Info("device reply lost: trying another route", "level", s.level)
+	}
+	return s.level
+}
+
+// noteReply records that the request with key was answered.
+func (h *Hub) noteReply(device, key string) {
+	now := h.now()
+	h.lostMu.Lock()
+	defer h.lostMu.Unlock()
+	if s := h.lost[device]; s != nil {
+		s.key, s.at = key, now
+	}
+}
+
+// setFlood records whether replies to the device's flood requests are
+// flooded, so its direct requests are answered the same way.
+func (h *Hub) setFlood(device string, flood bool) {
+	h.lostMu.Lock()
+	defer h.lostMu.Unlock()
+	if s := h.lost[device]; s != nil {
+		s.flood = flood
+	}
+}
+
+func (h *Hub) floodReplies(device string) bool {
+	h.lostMu.Lock()
+	defer h.lostMu.Unlock()
+	s := h.lost[device]
+	return s != nil && s.level > 0 && s.flood
+}
+
+// retryKey identifies a request so that a node's resend of it, which
+// carries a new seq, matches it, while the next request of a sequence
+// (the next fragment, config chunk or batch of events) does not.
+func retryKey(m hubproto.Message) string {
+	switch m := m.(type) {
+	case *hubproto.Fragment:
+		return fmt.Sprintf("fragment/%d/%d", m.Xfer, m.Offset)
+	case *hubproto.ConfigGet:
+		return fmt.Sprintf("config-get/%d/%d", m.ConfigVersion, m.Offset)
+	case *hubproto.Events:
+		if len(m.Events) > 0 {
+			return fmt.Sprintf("events/%d", m.Events[0].Seq)
 		}
-		if ok {
-			r := store.Route{Gateway: best.Gateway, PathLen: best.PathLen, Path: best.Path}
+	case *hubproto.CommandResult:
+		return fmt.Sprintf("command-result/%d", m.ID)
+	}
+	return typeName(m.Type())
+}
+
+// replyRoute picks the gateway and path to reply through, and whether to
+// flood the reply instead. A flood request is answered along the path of
+// one of its receptions, which becomes the device's stored route: the best
+// at level 0, the next best at level 1 and so on, and once level passes
+// them all, by flood. A direct request, whose path is used up on arrival,
+// is answered along the stored route, or by flood while the device's
+// replies are being flooded.
+func (h *Hub) replyRoute(ctx context.Context, req *request, level int) (store.Route, bool, error) {
+	if !req.direct {
+		recs, err := h.st.Receptions(ctx, req.hash)
+		if err != nil {
+			return store.Route{}, false, err
+		}
+		if len(recs) > 0 {
+			flood := level >= len(recs)
+			pick := recs[0] // a flooded reply still tells the device the best path
+			if !flood {
+				pick = recs[level]
+			}
+			r := store.Route{Gateway: pick.Gateway, PathLen: pick.PathLen, Path: pick.Path}
 			if !req.anon {
 				err = h.st.SetRoute(ctx, req.device, r, h.now())
+				h.setFlood(req.device, flood)
 			}
-			return r, err
+			return r, flood, err
 		}
-	} else if r, ok, err := h.st.Route(ctx, req.device); err != nil || ok {
-		return r, err
+		return store.Route{Gateway: req.gateway}, level > 0, nil
+	}
+	flood := h.floodReplies(req.device)
+	if r, ok, err := h.st.Route(ctx, req.device); err != nil || ok {
+		return r, flood, err
 	}
 	// No route known: answer through the gateway that heard it, zero hop.
-	return store.Route{Gateway: req.gateway}, nil
+	return store.Route{Gateway: req.gateway}, flood, nil
 }
 
 // handle applies a request and returns the reply, or nil to send none.
@@ -440,8 +552,9 @@ func (h *Hub) handleJoin(ctx context.Context, req *request, j *hubproto.Join) (h
 
 var errReplyBuild = errors.New("hub: could not build reply packet")
 
-// reply encrypts m for the device and sends it along route.
-func (h *Hub) reply(req *request, route store.Route, m hubproto.Message) error {
+// reply encrypts m for the device and sends it through route's gateway,
+// along route's path reversed, or as a flood.
+func (h *Hub) reply(req *request, route store.Route, flood bool, m hubproto.Message) error {
 	pt, err := hubproto.Encode(nil, req.seq, m, hubproto.MaxPlaintext)
 	if err != nil {
 		return err
@@ -451,9 +564,14 @@ func (h *Hub) reply(req *request, route store.Route, m hubproto.Message) error {
 	pkt := r.mesh.CreateDatagram(meshcore.PayloadTypeResponse, &req.id, req.secret[:], pt)
 	var raw []byte
 	if pkt != nil {
-		pkt.Header = pkt.Header&^meshcore.PHRouteMask | meshcore.RouteTypeDirect
-		pkt.PathLen = route.PathLen
-		reversePath(pkt.Path[:], route.Path, route.PathLen)
+		if flood {
+			pkt.Header = pkt.Header&^meshcore.PHRouteMask | meshcore.RouteTypeFlood
+			pkt.SetPathHashSizeAndCount(1, 0) // like Mesh.SendFlood(p, 0, 1)
+		} else {
+			pkt.Header = pkt.Header&^meshcore.PHRouteMask | meshcore.RouteTypeDirect
+			pkt.PathLen = route.PathLen
+			reversePath(pkt.Path[:], route.Path, route.PathLen)
+		}
 		raw = make([]byte, meshcore.MaxTransUnit)
 		raw = raw[:pkt.Encode(raw)]
 		r.mesh.ReleasePacket(pkt)
