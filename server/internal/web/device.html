@@ -11,6 +11,9 @@
 		<div class="row"><span class="label">Last check-in</span>
 			<span>{{if never .LastHelloAt}}<span class="muted">never</span>{{else}}{{ago .LastHelloAt}} · woke by {{wakeReason .WakeReason}} · up {{uptime .UptimeS}}{{if .BatteryMV}} · {{.BatteryMV}} mV{{end}}{{end}}</span>
 		</div>
+		{{with .LinkStats}}<div class="row"><span class="label">Link</span>
+			<span>{{if .ReplyRSSI}}hub reply {{.ReplyRSSI}} dBm, SNR {{printf "%.1f" .ReplySNR}} dB{{else}}<span class="muted">no hub reply since boot</span>{{end}}{{if .NoiseFloor}} · noise floor {{.NoiseFloor}} dBm{{end}} · {{.MissedReplies}} missed {{if eq .MissedReplies 1}}reply{{else}}replies{{end}} · {{.RxErrors}} rx errors <span class="muted">({{ago .At}})</span></span>
+		</div>{{end}}
 		<div class="row"><span class="label">Joined</span><span>{{ago .JoinedAt}}</span></div>
 		<div class="actions">
 			{{if ne .Status "paired"}}

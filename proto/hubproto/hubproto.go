@@ -108,7 +108,22 @@ type Hello struct {
 	BatteryMV     uint16
 	UptimeS       uint32
 	Firmware      string
+	Link          *LinkStats // nil if the node does not report it
 }
+
+// LinkStats is how well a node hears the mesh, reported with its Hello.
+// It travels after Hello's fields behind a non-zero tag byte, so hubs that
+// predate it ignore it, and a Hello without it, whose decrypted plaintext
+// ends in zero padding, decodes with Link nil.
+type LinkStats struct {
+	ReplyRSSI  int8   // dBm of the last hub reply the node received; 0 if none since boot
+	ReplySNRx4 int8   // its SNR in quarter dB
+	NoiseFloor int8   // the radio's noise floor estimate in dBm; 0 if unknown
+	Missed     uint16 // requests that got no reply since the last answered Hello
+	RxErrors   uint16 // packets the radio dropped for CRC or header errors since then
+}
+
+const linkStatsTag = 0x01
 
 type ConfigGet struct {
 	ConfigVersion uint32
@@ -268,7 +283,13 @@ func DecodeMessage(src []byte) (Message, error) {
 	case TypeJoin:
 		m = &Join{Program: r.str(), Firmware: r.str(), Claim: r.str()}
 	case TypeHello:
-		m = &Hello{ConfigVersion: r.u32(), WakeReason: r.u8(), BatteryMV: r.u16(), UptimeS: r.u32(), Firmware: r.str()}
+		h := &Hello{ConfigVersion: r.u32(), WakeReason: r.u8(), BatteryMV: r.u16(), UptimeS: r.u32(), Firmware: r.str()}
+		if r.err == nil && len(r.b) >= 8 && r.b[0] == linkStatsTag {
+			r.u8()
+			h.Link = &LinkStats{ReplyRSSI: int8(r.u8()), ReplySNRx4: int8(r.u8()), NoiseFloor: int8(r.u8()),
+				Missed: r.u16(), RxErrors: r.u16()}
+		}
+		m = h
 	case TypeConfigGet:
 		m = &ConfigGet{ConfigVersion: r.u32(), Offset: r.u16()}
 	case TypeEvents:
@@ -329,7 +350,14 @@ func (m *Hello) appendBody(dst []byte) ([]byte, error) {
 	dst = append(dst, m.WakeReason)
 	dst = binary.LittleEndian.AppendUint16(dst, m.BatteryMV)
 	dst = binary.LittleEndian.AppendUint32(dst, m.UptimeS)
-	return appendStrs(dst, m.Firmware)
+	dst, err := appendStrs(dst, m.Firmware)
+	if err != nil || m.Link == nil {
+		return dst, err
+	}
+	l := m.Link
+	dst = append(dst, linkStatsTag, byte(l.ReplyRSSI), byte(l.ReplySNRx4), byte(l.NoiseFloor))
+	dst = binary.LittleEndian.AppendUint16(dst, l.Missed)
+	return binary.LittleEndian.AppendUint16(dst, l.RxErrors), nil
 }
 
 func (m *ConfigGet) appendBody(dst []byte) ([]byte, error) {

@@ -117,6 +117,17 @@ type Device struct {
 	UptimeS     uint32     `json:"uptime_s" doc:"Uptime at the last check-in, in seconds"`
 	LastHelloAt *time.Time `json:"last_hello_at,omitempty" doc:"Last check-in; absent before the first"`
 	JoinedAt    time.Time  `json:"joined_at"`
+	LinkStats   *LinkStats `json:"link_stats,omitempty" doc:"How well the device hears the mesh; absent if it never reported it"`
+}
+
+// LinkStats is how well a device hears the mesh, as it reported at a check-in.
+type LinkStats struct {
+	At            time.Time `json:"at" doc:"The check-in that reported it"`
+	ReplyRSSI     int       `json:"reply_rssi" doc:"Signal of the last hub reply the device received, in dBm; 0 if none since it booted"`
+	ReplySNR      float64   `json:"reply_snr" doc:"Its signal-to-noise ratio, in dB"`
+	NoiseFloor    int       `json:"noise_floor" doc:"The device radio's noise floor, in dBm; 0 if unknown"`
+	MissedReplies int       `json:"missed_replies" doc:"Requests that got no reply since the check-in before"`
+	RxErrors      int       `json:"rx_errors" doc:"Packets the device's radio dropped as corrupt since the check-in before"`
 }
 
 // Event is something a device reported.

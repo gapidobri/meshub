@@ -112,6 +112,7 @@ func (n *Node) requestDatagram(ctx context.Context, m hubproto.Message, anon boo
 		if !errors.Is(err, ErrNoReply) {
 			return nil, err
 		}
+		n.link.miss()
 		if direct {
 			// The route to the hub is stale: forget it and flood. This
 			// does not count as a retry.
@@ -256,4 +257,5 @@ func (h *handler) OnPeerDataRecv(p *meshcore.Packet, typ uint8, _ int, _ *[meshc
 		return // not the reply we are waiting for
 	}
 	h.reply = m
+	h.n.link.heard(h.n.cfg.Radio.LastRSSI(), p.SNRx4)
 }

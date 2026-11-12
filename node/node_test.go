@@ -618,3 +618,35 @@ func TestLogBuffer(t *testing.T) {
 		t.Errorf("log %q lacks the hub's time %s", n.Logs(), stamp)
 	}
 }
+
+func TestLinkTracker(t *testing.T) {
+	var l linkTracker
+	r := &errRadio{}
+	l.miss()
+	l.miss()
+	r.errs = 5
+	s := l.stats(r)
+	if s.Missed != 2 || s.RxErrors != 5 {
+		t.Fatalf("stats = %+v, want 2 missed, 5 errors", s)
+	}
+	l.miss() // the Hello itself is resent once before the hub answers
+	r.errs = 6
+	l.reported()
+	s = l.stats(r)
+	if s.Missed != 1 || s.RxErrors != 1 {
+		t.Errorf("after the answer: %+v, want the resend's 1 miss and 1 error left", s)
+	}
+	l.heard(-111.6, -34)
+	if s = l.stats(r); s.ReplyRSSI != -112 || s.ReplySNRx4 != -34 {
+		t.Errorf("reply signal = %d dBm / %d, want -112 / -34", s.ReplyRSSI, s.ReplySNRx4)
+	}
+}
+
+// errRadio is a radio that counts receive errors.
+type errRadio struct {
+	hubRadio
+	errs uint32
+}
+
+func (r *errRadio) Stats() (recv, recvErrs, sent uint32) { return 0, r.errs, 0 }
+func (*errRadio) NoiseFloor() int                        { return -118 }

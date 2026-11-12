@@ -381,10 +381,19 @@ func (h *Hub) handle(ctx context.Context, req *request, route store.Route) (hubp
 func (h *Hub) handleMessage(ctx context.Context, req *request, route store.Route, msg hubproto.Message) (hubproto.Message, error) {
 	switch m := msg.(type) {
 	case *hubproto.Hello:
-		err := h.st.RecordHello(ctx, req.device, store.Hello{
+		hello := store.Hello{
 			ConfigVersion: m.ConfigVersion, WakeReason: m.WakeReason, BatteryMV: m.BatteryMV,
 			UptimeS: m.UptimeS, Firmware: m.Firmware,
-		}, h.now())
+		}
+		if l := m.Link; l != nil {
+			hello.Link = &store.LinkStats{
+				ReplyRSSI: int(l.ReplyRSSI), ReplySNR: float64(l.ReplySNRx4) / 4, NoiseFloor: int(l.NoiseFloor),
+				MissedReplies: int(l.Missed), RxErrors: int(l.RxErrors),
+			}
+			h.log.Info("device link", "device", short(req.device), "reply_rssi", l.ReplyRSSI,
+				"reply_snr", float64(l.ReplySNRx4)/4, "noise_floor", l.NoiseFloor, "missed", l.Missed, "rx_errors", l.RxErrors)
+		}
+		err := h.st.RecordHello(ctx, req.device, hello, h.now())
 		if err != nil {
 			return nil, err
 		}

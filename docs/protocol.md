@@ -103,7 +103,7 @@ Integers are little-endian. `str` is a one-byte length and UTF-8 bytes.
 | Type | Name       | Body |
 |------|------------|------|
 | 0x01 | Join       | `program str, firmware str, claim str` (sent as `ANON_REQ`) |
-| 0x02 | Hello      | `config_version u32, wake_reason u8, battery_mv u16, uptime_s u32, firmware str` |
+| 0x02 | Hello      | `config_version u32, wake_reason u8, battery_mv u16, uptime_s u32, firmware str`, then optionally link stats (below) |
 | 0x03 | ConfigGet  | `config_version u32, offset u16` |
 | 0x04 | Events     | `count u8`, then per event `event_seq u32, time u32, kind str, data value` |
 | 0x05 | ConfigStatus | `config_version u32, status u8, reason str` |
@@ -112,6 +112,14 @@ Integers are little-endian. `str` is a one-byte length and UTF-8 bytes.
 | 0x08 | Fragment   | `xfer u16, total u16, offset u16, len u8, data [len]u8` |
 
 `wake_reason`: 0 unknown, 1 power on, 2 timer, 3 pin, 4 other.
+`Hello` link stats: `tag u8 = 1, reply_rssi i8, reply_snr i8, noise_floor i8,
+missed u16, rx_errors u16`. `reply_rssi` (dBm) and `reply_snr` (quarter dB)
+are how the last hub reply the node accepted arrived, 0 if none since boot;
+`noise_floor` is the radio's estimate in dBm, 0 if unknown; `missed` counts
+requests that got no reply and `rx_errors` packets the radio dropped as
+corrupt, both since the last answered Hello. The section is optional: hubs
+that predate it ignore trailing bytes, and a Hello without it ends in the
+cipher's zero padding, so a zero tag means none.
 `Events.time`: when the event happened, unix seconds by the node's clock; 0
 if the node did not know the time.
 `ConfigStatus.status`: 0 applied, 1 rejected (`reason` says why).

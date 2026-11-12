@@ -628,6 +628,11 @@ func TestDeviceLostReplyNextBestRoute(t *testing.T) {
 	if !bytes.Equal(r.Path, []byte{0xBB, 0xCC}) {
 		t.Errorf("route path = %X, want BBCC", r.Path)
 	}
+	// The join reply along AA was lost; the hello reported it.
+	dev, _, _ := st.Device(ctx, n.PublicKey())
+	if dev.LinkStats == nil || dev.LinkStats.MissedReplies != 1 {
+		t.Errorf("link stats = %+v, want 1 missed reply", dev.LinkStats)
+	}
 
 	// The next check-in goes direct along BB, CC and is answered at once.
 	before := a.transmissions()
@@ -636,6 +641,12 @@ func TestDeviceLostReplyNextBestRoute(t *testing.T) {
 	}
 	if got := a.transmissions() - before; got != 1 {
 		t.Errorf("hub transmitted %d packets for one direct hello, want 1", got)
+	}
+
+	// It reported none missed since the hello before.
+	dev, _, _ = st.Device(ctx, n.PublicKey())
+	if dev.LinkStats == nil || dev.LinkStats.MissedReplies != 0 {
+		t.Errorf("link stats = %+v, want none missed", dev.LinkStats)
 	}
 
 	// A later flood is answered along BB, CC straight away, not AA.

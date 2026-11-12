@@ -30,6 +30,17 @@ func Device(d store.Device) appproto.Device {
 		UptimeS:         d.UptimeS,
 		LastHelloAt:     timePtr(d.LastHelloAt),
 		JoinedAt:        d.JoinedAt.UTC(),
+		LinkStats:       linkStats(d.LinkStats),
+	}
+}
+
+func linkStats(l *store.LinkStats) *appproto.LinkStats {
+	if l == nil {
+		return nil
+	}
+	return &appproto.LinkStats{
+		At: l.At.UTC(), ReplyRSSI: l.ReplyRSSI, ReplySNR: l.ReplySNR, NoiseFloor: l.NoiseFloor,
+		MissedReplies: l.MissedReplies, RxErrors: l.RxErrors,
 	}
 }
 
