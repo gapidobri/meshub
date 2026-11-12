@@ -308,8 +308,9 @@ func TestEventQueue(t *testing.T) {
 	if len(hub.events) != 5 || n.Pending() != 0 {
 		t.Fatalf("hub got %d events, %d still pending", len(hub.events), n.Pending())
 	}
+	first := hub.events[0].Seq // fresh nodes number events from a random start
 	for i, e := range hub.events {
-		if e.Seq != uint32(3+i) || e.Data.Get("i").Int(-1) != int64(3+i) || e.Time != hub.time {
+		if e.Seq != first+uint32(i) || e.Data.Get("i").Int(-1) != int64(3+i) || e.Time != hub.time {
 			t.Errorf("event %d = seq %d %v at %d", i, e.Seq, e.Data.Any(), e.Time)
 		}
 	}
@@ -328,6 +329,81 @@ func TestEventQueue(t *testing.T) {
 	huge.Set("s", hubproto.String(strings.Repeat("x", 300)))
 	if err := n.Report("huge", huge); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("Report beyond MaxEventBytes = %v", err)
+	}
+}
+
+func TestSend(t *testing.T) {
+	hub := newFakeHub(t)
+	storage := &countingStorage{}
+	n := testNode(t, hub, storage)
+	if err := n.Send(ctx, "p", hubproto.Null()); !errors.Is(err, ErrPending) {
+		t.Errorf("Send before pairing = %v", err)
+	}
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	hub.events = nil
+	states, reqs := storage.saves[keyState], len(hub.reqs)
+
+	pos := hubproto.Bytes(make([]byte, 12))
+	for i := 0; i < 40; i++ {
+		if err := n.Send(ctx, "p", pos); err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+	}
+	if err := n.Report("stop", hubproto.Null()); err != nil {
+		t.Fatal(err)
+	}
+	if err := n.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Each notice is one transmission, sent direct along the learnt path,
+	// with no reply awaited.
+	if got := len(hub.reqs) - reqs; got != 41 {
+		t.Errorf("%d requests for 40 notices and a report, want 41", got)
+	}
+	for _, r := range hub.reqs[reqs:] {
+		if !r.direct {
+			t.Errorf("%T sent as a flood despite a known path", r.msg)
+		}
+	}
+	// Events share one numbering, stamped with the hub's time.
+	if len(hub.events) != 41 {
+		t.Fatalf("hub got %d events, want 41", len(hub.events))
+	}
+	for i, e := range hub.events {
+		if e.Seq != hub.events[0].Seq+uint32(i) || e.Time != hub.time {
+			t.Errorf("event %d: seq %d time %d", i, e.Seq, e.Time)
+		}
+		if i < 40 && (e.Kind != "p" || len(e.Data.Bytes(nil)) != 12) {
+			t.Errorf("notice %d = %s %v", i, e.Kind, e.Data.Any())
+		}
+	}
+	// Notices are not stored, and numbers are reserved in blocks.
+	if got := storage.saves[keyState] - states; got > 41/seqReserve*2+2 {
+		t.Errorf("state saved %d times for 41 events", got)
+	}
+	if n.Pending() != 0 {
+		t.Errorf("%d pending after flush", n.Pending())
+	}
+
+	// After a reboot, numbers carry on past everything used.
+	last := hub.events[40].Seq
+	n = testNode(t, hub, storage)
+	if err := n.Send(ctx, "p", pos); err != nil {
+		t.Fatal(err)
+	}
+	if got := hub.events[41].Seq; got <= last {
+		t.Errorf("event number %d after reboot, last was %d", got, last)
+	}
+
+	big := hubproto.Bytes(make([]byte, hubproto.MaxPlaintext))
+	if err := n.Send(ctx, "p", big); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("Send of an oversized event = %v", err)
+	}
+	n.cfg.Radio.(*nodeRadio).fail = true
+	if err := n.Send(ctx, "p", pos); !errors.Is(err, errTransmit) {
+		t.Errorf("Send with a failing radio = %v", err)
 	}
 }
 

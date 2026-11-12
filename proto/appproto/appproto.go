@@ -127,7 +127,7 @@ type Event struct {
 	Seq     uint32 `json:"seq" doc:"The device's own event number"`
 	Kind    string `json:"kind"`
 	// Data is the event's value as the device encoded it.
-	Data       json.RawMessage `json:"data"`
+	Data       json.RawMessage `json:"data" doc:"The event's value as the device encoded it. A byte string appears as {\"$bytes\": \"<base64>\"}"`
 	DeviceTime *time.Time      `json:"device_time,omitempty" doc:"When it happened by the device's clock; absent if the device did not know"`
 	ReceivedAt time.Time       `json:"received_at"`
 }

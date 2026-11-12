@@ -6,6 +6,31 @@ compatibility, and says how.
 
 ## Unreleased
 
+Devices that use notices or byte strings need a backend with this
+release; older backends drop them. Nothing else changes on the air.
+
+### Devices
+
+* `Node.Send` sends an event as a notice: once, without an
+  acknowledgement and without storing it, for frequent data such as
+  positions. It takes one transmission instead of a request and a reply.
+* Values can hold byte strings (`hubproto.Bytes`), so compact binary data
+  needs no encoding into numbers or text.
+* A node that lost its stored state numbered its events from 0 again, and
+  the backend dropped them as duplicates of earlier ones. Fresh nodes now
+  start their event numbers at random, like request numbers.
+* Event numbers are reserved in blocks, so reporting an event no longer
+  writes the node's state to flash every time.
+
+### Backend
+
+* Stores notices as events, without replying.
+* Byte strings appear in JSON (API, MQTT, web UI) as
+  `{"$bytes": "<base64>"}`, and such an object in a config is stored as a
+  byte string.
+
+## 0.1.0
+
 The first release.
 
 ### Devices

@@ -10,6 +10,7 @@ import (
 const (
 	majorUint   = 0
 	majorNegInt = 1
+	majorBytes  = 2
 	majorText   = 3
 	majorArray  = 4
 	majorMap    = 5
@@ -75,6 +76,8 @@ func (v Value) AppendCBOR(dst []byte) []byte {
 		return binary.BigEndian.AppendUint64(append(dst, cborFloat64), math.Float64bits(v.f))
 	case KindString:
 		return append(appendHead(dst, majorText, uint64(len(v.s))), v.s...)
+	case KindBytes:
+		return append(appendHead(dst, majorBytes, uint64(len(v.s))), v.s...)
 	case KindList:
 		dst = appendHead(dst, majorArray, uint64(len(v.items)))
 		for _, e := range v.items {
@@ -191,6 +194,9 @@ func (d *cborDecoder) value(depth int) (Value, error) {
 	case majorText:
 		b, err := d.take(arg)
 		return String(string(b)), err
+	case majorBytes:
+		b, err := d.take(arg)
+		return Bytes(b), err
 	case majorArray:
 		if arg > uint64(len(d.src)-d.pos) { // every item takes at least a byte
 			return Value{}, errCBORShort

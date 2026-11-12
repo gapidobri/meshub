@@ -17,26 +17,27 @@ const (
 	keyResult       = "cmdresult" // CBOR command result not yet acknowledged
 )
 
-// seqReserve is how many request numbers are reserved per write of the
-// counter, so the node does not write storage on every request. Up to this
-// many numbers are skipped after a reboot; they are never reused.
+// seqReserve is how many request (and event) numbers are reserved per write
+// of the counter, so the node does not write storage on every request or
+// sent event. Up to this many numbers are skipped after a reboot; they are
+// never reused.
 const seqReserve = 16
 
 var errBadState = errors.New("node: stored state is corrupt")
 
 // state is the small, frequently written part of what the node persists.
 type state struct {
-	seqLimit  uint32 // requests may use numbers below this without saving
-	paired    bool
-	hasPath   bool
-	pathLen   uint8
-	path      []byte
-	nextEvent uint32
+	seqLimit   uint32 // requests may use numbers below this without saving
+	paired     bool
+	hasPath    bool
+	pathLen    uint8
+	path       []byte
+	eventLimit uint32 // events may use numbers below this without saving
 }
 
 // encodeState lays out state as:
 //
-//	[0:4] seqLimit  [4] flags (1 paired, 2 hasPath)  [5:9] nextEvent
+//	[0:4] seqLimit  [4] flags (1 paired, 2 hasPath)  [5:9] eventLimit
 //	[9] pathLen  [10:] path
 func encodeState(s *state) []byte {
 	b := binary.LittleEndian.AppendUint32(nil, s.seqLimit)
@@ -48,7 +49,7 @@ func encodeState(s *state) []byte {
 		flags |= 2
 	}
 	b = append(b, flags)
-	b = binary.LittleEndian.AppendUint32(b, s.nextEvent)
+	b = binary.LittleEndian.AppendUint32(b, s.eventLimit)
 	b = append(b, s.pathLen)
 	return append(b, s.path...)
 }
@@ -61,7 +62,7 @@ func decodeState(b []byte) (state, error) {
 	s.seqLimit = binary.LittleEndian.Uint32(b)
 	s.paired = b[4]&1 != 0
 	s.hasPath = b[4]&2 != 0
-	s.nextEvent = binary.LittleEndian.Uint32(b[5:])
+	s.eventLimit = binary.LittleEndian.Uint32(b[5:])
 	s.pathLen = b[9]
 	s.path = append([]byte(nil), b[10:]...)
 	if s.hasPath && pathBytes(s.pathLen) != len(s.path) {

@@ -139,6 +139,9 @@ func (h *fakeHub) answer(m hubproto.Message) hubproto.Message {
 	case *hubproto.Events:
 		h.events = append(h.events, m.Events...)
 		return &hubproto.Ack{}
+	case *hubproto.Notice:
+		h.events = append(h.events, m.Event)
+		return nil // notices get no reply
 	case *hubproto.ConfigStatus:
 		h.statuses = append(h.statuses, *m)
 		return &hubproto.Ack{}
@@ -235,7 +238,8 @@ func (*hubRadio) IsInRecvMode() bool               { return true }
 // nodeRadio connects a node to a fakeHub.
 type nodeRadio struct {
 	meshcore.RadioBase
-	hub *fakeHub
+	hub  *fakeHub
+	fail bool // refuse to transmit
 }
 
 func (r *nodeRadio) RecvRaw(buf []byte) int {
@@ -248,6 +252,9 @@ func (r *nodeRadio) RecvRaw(buf []byte) int {
 }
 
 func (r *nodeRadio) StartSendRaw(b []byte) bool {
+	if r.fail {
+		return false
+	}
 	r.hub.receive(append([]byte(nil), b...))
 	return true
 }
