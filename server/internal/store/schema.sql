@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS devices (
 	uptime_s       INTEGER NOT NULL DEFAULT 0,
 	last_hello_at  INTEGER NOT NULL DEFAULT 0,
 	joined_at      INTEGER NOT NULL
-	-- rejected_version and config_error are added by migration 2
+	-- rejected_version and config_error are added by migration 2, the link
+	-- stats (link_at, reply_rssi, ...) by migration 4
 );
 
 -- The config the hub wants each device to have.

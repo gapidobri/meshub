@@ -129,6 +129,8 @@ type Node struct {
 	wake      uint8
 	batteryMV uint16
 	start     time.Time
+
+	link linkTracker
 }
 
 func defaultDuration(d *time.Duration, def time.Duration) {
@@ -366,12 +368,14 @@ func (n *Node) hello(ctx context.Context) error {
 		BatteryMV:     n.batteryMV,
 		UptimeS:       uint32(time.Since(n.start) / time.Second),
 		Firmware:      n.cfg.Firmware,
+		Link:          n.link.stats(n.cfg.Radio),
 	}, false)
 	if err != nil {
 		return err
 	}
 	switch r := reply.(type) {
 	case *hubproto.HelloReply:
+		n.link.reported()
 		if err := n.SetTime(r.Time); err != nil {
 			return err
 		}

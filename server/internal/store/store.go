@@ -43,6 +43,13 @@ var migrations = []string{
 	 DROP TABLE events;
 	 ALTER TABLE events_v3 RENAME TO events;
 	 CREATE INDEX events_received_at ON events(received_at);`,
+	// 4: link stats reported with a device's hello
+	`ALTER TABLE devices ADD COLUMN link_at INTEGER NOT NULL DEFAULT 0;        -- check-in that last reported them, 0 if never
+	 ALTER TABLE devices ADD COLUMN reply_rssi INTEGER NOT NULL DEFAULT 0;     -- dBm of the last hub reply the device received, 0 if none
+	 ALTER TABLE devices ADD COLUMN reply_snr REAL NOT NULL DEFAULT 0;         -- its SNR in dB
+	 ALTER TABLE devices ADD COLUMN noise_floor INTEGER NOT NULL DEFAULT 0;    -- the device radio's noise floor, dBm, 0 if unknown
+	 ALTER TABLE devices ADD COLUMN missed_replies INTEGER NOT NULL DEFAULT 0; -- requests without a reply since the check-in before
+	 ALTER TABLE devices ADD COLUMN rx_errors INTEGER NOT NULL DEFAULT 0;      -- packets its radio dropped as corrupt since then`,
 }
 
 func migrate(db *sql.DB) error {

@@ -199,6 +199,7 @@ func TestMessagesRoundTrip(t *testing.T) {
 	msgs := []Message{
 		&Join{Program: "weather", Firmware: "1.0", Claim: "AB12"},
 		&Hello{ConfigVersion: 5, WakeReason: WakePin, BatteryMV: 3700, UptimeS: 12, Firmware: "1.0"},
+		&Hello{ConfigVersion: 5, Firmware: "1.0", Link: &LinkStats{ReplyRSSI: -112, ReplySNRx4: -34, NoiseFloor: -118, Missed: 7, RxErrors: 300}},
 		&ConfigGet{ConfigVersion: 5, Offset: 128},
 		&Events{Events: []Event{{Seq: 17, Time: 1_800_000_000, Kind: "flow", Data: data}, {Seq: 18, Kind: "pin", Data: Null()}}},
 		&ConfigStatus{ConfigVersion: 5, Status: ConfigRejected, Reason: "interval_s must be positive"},
@@ -330,5 +331,32 @@ func TestDecodeErrors(t *testing.T) {
 		if _, _, err := Decode(src); err == nil {
 			t.Errorf("%s: no error", name)
 		}
+	}
+}
+
+// A Hello from a node without link stats arrives with zero padding after
+// its fields (the cipher's block size), which must not read as stats; and a
+// hub that predates them must still decode a Hello that has them.
+func TestHelloLinkStatsCompat(t *testing.T) {
+	old, err := Encode(nil, 1, &Hello{ConfigVersion: 2, Firmware: "1.0"}, MaxPlaintext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := append(old, make([]byte, 16)...)
+	_, m, err := Decode(padded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := m.(*Hello); h.Link != nil || h.ConfigVersion != 2 {
+		t.Errorf("padded old Hello = %+v, want no link stats", h)
+	}
+
+	withLink, _ := Encode(nil, 1, &Hello{ConfigVersion: 2, Firmware: "1.0", Link: &LinkStats{ReplyRSSI: -100}}, MaxPlaintext)
+	_, m, err = Decode(append(withLink, 0, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := m.(*Hello); h.Link == nil || h.Link.ReplyRSSI != -100 {
+		t.Errorf("padded Hello with stats = %+v", h)
 	}
 }

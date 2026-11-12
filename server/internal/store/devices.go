@@ -26,26 +26,44 @@ type Device struct {
 	WantVersion   uint32 `json:"want_version"`   // the hub's config version for it
 	// RejectedVersion is the last config version the device rejected, and
 	// ConfigError why.
-	RejectedVersion uint32    `json:"rejected_version"`
-	ConfigError     string    `json:"config_error"`
-	BatteryMV       int       `json:"battery_mv"`
-	WakeReason      int       `json:"wake_reason"`
-	UptimeS         uint32    `json:"uptime_s"`
-	LastHelloAt     time.Time `json:"last_hello_at"`
-	JoinedAt        time.Time `json:"joined_at"`
+	RejectedVersion uint32     `json:"rejected_version"`
+	ConfigError     string     `json:"config_error"`
+	BatteryMV       int        `json:"battery_mv"`
+	WakeReason      int        `json:"wake_reason"`
+	UptimeS         uint32     `json:"uptime_s"`
+	LastHelloAt     time.Time  `json:"last_hello_at"`
+	JoinedAt        time.Time  `json:"joined_at"`
+	LinkStats       *LinkStats `json:"link_stats,omitempty"` // nil if the device never reported them
+}
+
+// LinkStats is how well a device hears the mesh, as of a check-in.
+type LinkStats struct {
+	At            time.Time `json:"at"`
+	ReplyRSSI     int       `json:"reply_rssi"` // 0 if no reply reached it since it booted
+	ReplySNR      float64   `json:"reply_snr"`
+	NoiseFloor    int       `json:"noise_floor"` // 0 if unknown
+	MissedReplies int       `json:"missed_replies"`
+	RxErrors      int       `json:"rx_errors"`
 }
 
 const deviceColumns = `d.pubkey, d.status, d.program, d.firmware, d.claim, d.last_seq, d.config_version,
 	coalesce(c.version, 0), d.rejected_version, d.config_error, d.battery_mv, d.wake_reason, d.uptime_s,
-	d.last_hello_at, d.joined_at`
+	d.last_hello_at, d.joined_at,
+	d.link_at, d.reply_rssi, d.reply_snr, d.noise_floor, d.missed_replies, d.rx_errors`
 
 func scanDevice(sc interface{ Scan(...any) error }) (Device, error) {
 	var d Device
-	var hello, joined int64
+	var hello, joined, linkAt int64
+	var l LinkStats
 	err := sc.Scan(&d.PubKey, &d.Status, &d.Program, &d.Firmware, &d.Claim, &d.LastSeq, &d.ConfigVersion,
-		&d.WantVersion, &d.RejectedVersion, &d.ConfigError, &d.BatteryMV, &d.WakeReason, &d.UptimeS, &hello, &joined)
+		&d.WantVersion, &d.RejectedVersion, &d.ConfigError, &d.BatteryMV, &d.WakeReason, &d.UptimeS, &hello, &joined,
+		&linkAt, &l.ReplyRSSI, &l.ReplySNR, &l.NoiseFloor, &l.MissedReplies, &l.RxErrors)
 	if hello > 0 {
 		d.LastHelloAt = time.UnixMilli(hello)
+	}
+	if linkAt > 0 {
+		l.At = time.UnixMilli(linkAt)
+		d.LinkStats = &l
 	}
 	d.JoinedAt = time.UnixMilli(joined)
 	return d, err
@@ -142,15 +160,25 @@ type Hello struct {
 	BatteryMV     uint16
 	UptimeS       uint32
 	Firmware      string
+	Link          *LinkStats // nil if the device did not report them; At is ignored
 }
 
-// RecordHello stores a device's check-in.
+// RecordHello stores a device's check-in. Link stats are kept from an
+// earlier check-in if this one has none.
 func (s *Store) RecordHello(ctx context.Context, pubKey string, h Hello, at time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE devices SET config_version = ?, wake_reason = ?, battery_mv = ?, uptime_s = ?,
 			firmware = CASE WHEN ? = '' THEN firmware ELSE ? END, last_hello_at = ?
 		WHERE pubkey = ?`,
 		h.ConfigVersion, h.WakeReason, h.BatteryMV, h.UptimeS, h.Firmware, h.Firmware, millis(at), pubKey)
+	if err != nil || h.Link == nil {
+		return err
+	}
+	l := h.Link
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE devices SET link_at = ?, reply_rssi = ?, reply_snr = ?, noise_floor = ?, missed_replies = ?, rx_errors = ?
+		WHERE pubkey = ?`,
+		millis(at), l.ReplyRSSI, l.ReplySNR, l.NoiseFloor, l.MissedReplies, l.RxErrors, pubKey)
 	return err
 }
 

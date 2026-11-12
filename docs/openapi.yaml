@@ -102,6 +102,9 @@ components:
           description: Last check-in; absent before the first
           format: date-time
           type: string
+        link_stats:
+          $ref: "#/components/schemas/LinkStats"
+          description: How well the device hears the mesh; absent if it never reported it
         program:
           description: What the device runs, as reported when it joined
           type: string
@@ -391,6 +394,41 @@ components:
         - hops
         - heard_count
         - last_heard_at
+      type: object
+    LinkStats:
+      additionalProperties: true
+      properties:
+        at:
+          description: The check-in that reported it
+          format: date-time
+          type: string
+        missed_replies:
+          description: Requests that got no reply since the check-in before
+          format: int64
+          type: integer
+        noise_floor:
+          description: The device radio's noise floor, in dBm; 0 if unknown
+          format: int64
+          type: integer
+        reply_rssi:
+          description: Signal of the last hub reply the device received, in dBm; 0 if none since it booted
+          format: int64
+          type: integer
+        reply_snr:
+          description: Its signal-to-noise ratio, in dB
+          format: double
+          type: number
+        rx_errors:
+          description: Packets the device's radio dropped as corrupt since the check-in before
+          format: int64
+          type: integer
+      required:
+        - at
+        - reply_rssi
+        - reply_snr
+        - noise_floor
+        - missed_replies
+        - rx_errors
       type: object
     Node:
       additionalProperties: true
