@@ -60,6 +60,17 @@ direct, along the request's flood path reversed. For a direct request,
 whose path is used up on arrival, the hub uses the route it stored from
 that node's last flood request.
 
+A route can carry requests to the hub but not replies back. The hub takes
+a flood request that repeats the one it last answered (same message, new
+`seq`, within 30 seconds) as a lost reply, and falls back a step: it
+answers along the next best reception of the request, and once none is
+left, floods the reply. It also floods its replies to the node's direct
+requests. Direct requests never count as repeats, since a node that loses
+a direct reply resends by flood. The fallback holds for later check-ins,
+so the failing route is skipped, until an hour passes without a lost
+reply; then the hub tries the best route again. The hub keeps this state
+in memory only, so a restart clears it.
+
 Replies to a hello tell the node its current path to the hub, so a node
 learns and refreshes its route from the hub instead of from MeshCore path
 packets.
