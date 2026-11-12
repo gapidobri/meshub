@@ -11,6 +11,10 @@ release; older backends drop them. Nothing else changes on the air.
 
 ### Devices
 
+* `Config.OnLog` receives each line the node logs, as it is logged, for a
+  live console: the log buffer's lines, and details of talking to the hub
+  that the buffer does not keep (replies and their times, timeouts,
+  retries, route changes), marked as debug.
 * `Node.Send` sends an event as a notice: once, without an
   acknowledgement and without storing it, for frequent data such as
   positions. It takes one transmission instead of a request and a reply.

@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gapidobri/meshub/proto/hubproto"
 )
 
 // MaxLogSize is the largest log buffer: its contents, with the command
@@ -44,14 +46,72 @@ func (l *logBuffer) clear() { l.buf = l.buf[:0] }
 // the "logs" command. Lines are stamped with the node's time once a check-in
 // or SetTime has set the clock, and with seconds since boot before that.
 func (n *Node) Log(msg string) {
-	var stamp string
-	if n.clockSet {
-		stamp = time.Unix(int64(n.cfg.RTC.CurrentTime()), 0).UTC().Format("01-02 15:04:05")
-	} else {
-		stamp = "+" + strconv.Itoa(int(time.Since(n.start)/time.Second)) + "s"
+	line := n.stamp() + " " + msg
+	n.logs.add(line)
+	if n.cfg.OnLog != nil {
+		n.cfg.OnLog(line, false)
 	}
-	n.logs.add(stamp + " " + msg)
 }
+
+// debug passes a transport detail to Config.OnLog, without keeping it.
+func (n *Node) debug(msg string) {
+	if n.cfg.OnLog != nil {
+		n.cfg.OnLog(n.stamp()+" "+msg, true)
+	}
+}
+
+func (n *Node) stamp() string {
+	if n.clockSet {
+		return time.Unix(int64(n.cfg.RTC.CurrentTime()), 0).UTC().Format("01-02 15:04:05")
+	}
+	return "+" + strconv.Itoa(int(time.Since(n.start)/time.Second)) + "s"
+}
+
+// typeName names a message type for the log.
+func typeName(m hubproto.Message) string {
+	switch m.Type() {
+	case hubproto.TypeJoin:
+		return "join"
+	case hubproto.TypeHello:
+		return "hello"
+	case hubproto.TypeConfigGet:
+		return "config-get"
+	case hubproto.TypeEvents:
+		return "events"
+	case hubproto.TypeConfigStatus:
+		return "config-status"
+	case hubproto.TypeCommandGet:
+		return "command-get"
+	case hubproto.TypeCommandResult:
+		return "command-result"
+	case hubproto.TypeFragment:
+		return "fragment"
+	case hubproto.TypeNotice:
+		return "notice"
+	case hubproto.TypeJoinReply:
+		return "join-reply"
+	case hubproto.TypeHelloReply:
+		return "hello-reply"
+	case hubproto.TypeConfigChunk:
+		return "config-chunk"
+	case hubproto.TypeAck:
+		return "ack"
+	case hubproto.TypeCommand:
+		return "command"
+	case hubproto.TypeError:
+		return "error"
+	}
+	return "type " + strconv.Itoa(int(m.Type()))
+}
+
+func route(direct bool) string {
+	if direct {
+		return "direct"
+	}
+	return "flood"
+}
+
+func ms(d time.Duration) string { return strconv.Itoa(int(d/time.Millisecond)) + "ms" }
 
 // Logs returns the log buffer's contents, oldest line first.
 func (n *Node) Logs() string { return n.logs.String() }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"time"
 
 	meshcore "github.com/gapidobri/meshcore-go"
@@ -107,13 +108,17 @@ func (n *Node) requestDatagram(ctx context.Context, m hubproto.Message, anon boo
 		reply, err := n.send(ctx, m, anon, direct, timeout)
 		if err == nil {
 			est.sample(time.Since(start))
+			n.debug(typeName(m) + " " + route(direct) + ": " + typeName(reply) + " in " + ms(time.Since(start)))
 			return reply, nil
 		}
 		if !errors.Is(err, ErrNoReply) {
+			n.debug(typeName(m) + " " + route(direct) + ": " + err.Error())
 			return nil, err
 		}
+		n.debug(typeName(m) + " " + route(direct) + ": no reply in " + ms(timeout))
 		n.link.miss()
 		if direct {
+			n.debug("route to the hub is stale: flooding")
 			// The route to the hub is stale: forget it and flood. This
 			// does not count as a retry.
 			n.st.hasPath = false
@@ -122,6 +127,7 @@ func (n *Node) requestDatagram(ctx context.Context, m hubproto.Message, anon boo
 				return nil, err
 			}
 		} else if tries == n.cfg.Retries {
+			n.debug(typeName(m) + ": giving up after " + strconv.Itoa(tries+1) + " tries")
 			return nil, ErrNoReply
 		} else {
 			tries++
@@ -193,9 +199,11 @@ var errTransmit = errors.New("node: radio failed to transmit")
 // transmit sends m to the hub, expecting no reply, and returns once the
 // radio has sent it. It goes direct when the node knows its path.
 func (n *Node) transmit(ctx context.Context, m hubproto.Message) error {
-	if _, err := n.queue(m, false, n.st.hasPath); err != nil {
+	direct := n.st.hasPath
+	if _, err := n.queue(m, false, direct); err != nil {
 		return err
 	}
+
 	deadline := time.Now().Add(sendTimeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
@@ -205,8 +213,10 @@ func (n *Node) transmit(ctx context.Context, m hubproto.Message) error {
 		n.cfg.RTC.Tick()
 		if done, ok := n.h.sent(); done {
 			if !ok {
+				n.debug(typeName(m) + " " + route(direct) + ": " + errTransmit.Error())
 				return errTransmit
 			}
+			n.debug(typeName(m) + " " + route(direct) + ": sent")
 			return nil
 		}
 		time.Sleep(time.Millisecond)

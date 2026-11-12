@@ -726,3 +726,58 @@ type errRadio struct {
 
 func (r *errRadio) Stats() (recv, recvErrs, sent uint32) { return 0, r.errs, 0 }
 func (*errRadio) NoiseFloor() int                        { return -118 }
+
+func TestOnLog(t *testing.T) {
+	hub := newFakeHub(t)
+	type line struct {
+		text  string
+		debug bool
+	}
+	var got []line
+	n := testNode(t, hub, &MemStorage{}, func(c *Config) {
+		c.OnLog = func(l string, debug bool) { got = append(got, line{l, debug}) }
+	})
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// One lost reply on the direct route: the node floods instead.
+	lost := false
+	hub.drop = func(m hubproto.Message) bool {
+		if _, ok := m.(*hubproto.Hello); ok && !lost {
+			lost = true
+			return true
+		}
+		return false
+	}
+	if err := n.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	n.Log("hello from the program")
+
+	has := func(sub string, debug bool) bool {
+		for _, l := range got {
+			if strings.Contains(l.text, sub) && l.debug == debug {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []struct {
+		sub   string
+		debug bool
+	}{
+		{"hello flood: hello-reply in", true},
+		{"route to the hub: 0 hops", true},
+		{"hello direct: no reply in", true},
+		{"route to the hub is stale: flooding", true},
+		{"hello from the program", false},
+	} {
+		if !has(want.sub, want.debug) {
+			t.Errorf("no line %q (debug %v) in %+v", want.sub, want.debug, got)
+		}
+	}
+	// Debug lines are not kept in the buffer the hub fetches.
+	if logs := n.Logs(); strings.Contains(logs, "flood") || !strings.Contains(logs, "hello from the program") {
+		t.Errorf("log buffer = %q", logs)
+	}
+}

@@ -80,6 +80,11 @@ type Config struct {
 	// LogSize is the size of the log buffer the "logs" command returns, in
 	// bytes (default 1024, at most MaxLogSize).
 	LogSize int
+	// OnLog, if set, receives each line the node logs, stamped, as it is
+	// logged: the lines of the log buffer (debug false), and details of
+	// talking to the hub that the buffer does not keep, such as replies,
+	// retries and route changes (debug true). For a console or a live log.
+	OnLog func(line string, debug bool)
 }
 
 // Errors returned by Sync.
@@ -412,6 +417,7 @@ func (n *Node) setPath(pathLen uint8, path []byte) error {
 	}
 	n.st.hasPath, n.st.pathLen, n.st.path = true, pathLen, append([]byte(nil), path...)
 	n.directRTT = rttEstimator{} // a new route answers in its own time
+	n.debug("route to the hub: " + strconv.Itoa(int(pathLen&63)) + " hops")
 	return n.saveState()
 }
 
